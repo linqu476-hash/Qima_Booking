@@ -251,7 +251,7 @@ async def execute(rid: str) -> None:
     env = {**os.environ, **{k: str(v) for k, v in s["env"].items()},
            "HEADLESS": "true" if s["headless"] else "false", "PYTHONUNBUFFERED": "1"}
     cmd = [sys.executable, "-u", "main.py"]
-    if shutil.which("xvfb-run"):  # virtual display, so scripts that open a visible browser still work
+    if shutil.which("xvfb-run") and shutil.which("xauth"):  # virtual display, so scripts that open a visible browser still work
         cmd = ["xvfb-run", "-a"] + cmd
     timed_out = False
     with open(d / "run.log", "ab") as log:
