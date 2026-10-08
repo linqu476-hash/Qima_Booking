@@ -24,7 +24,7 @@ cfg = {k: os.getenv(k) or DEFAULTS.get(k, "") for k in (
     "QIMA_USER", "QIMA_PASS", "BOOKING_REF", "SUPPLIER_NAME",
     "START_DATE", "START_TIME", "EXCEL_FILE", "PO_PDF_DIR")}
 JOB_FILE = BASE / (os.getenv("JOB_FILE") or "input/booking_list.xlsx")
-HEADLESS = os.getenv("HEADLESS", "false").lower() == "true"
+HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 
 (BASE / "logs").mkdir(exist_ok=True)
