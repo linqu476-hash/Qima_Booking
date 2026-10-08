@@ -1,0 +1,2 @@
+Copy main.py (and any helper .py files) from your qima_rpa project into this folder.
+Do not copy .env, input/ or logs/. The dashboard creates those for every run.

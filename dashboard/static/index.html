@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QIMA RPA control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#12202b;--mute:#5d6b76;--line:#d9e0e5;--bg:#eef2f4;--panel:#fff;--accent:#0b5f7a;--ok:#1f7a4d;--warn:#b7791f;--bad:#b3382c;
+--font:"Public Sans",system-ui,sans-serif;--mono:"JetBrains Mono",ui-monospace,monospace}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 var(--font);color:var(--ink);background:var(--bg)}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer;border:1px solid var(--line);background:var(--panel);padding:7px 14px;border-radius:6px}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+button.danger{color:var(--bad);border-color:#e3b9b4}
+button:disabled{opacity:.5;cursor:default}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+input[type=text],input[type=password],input[type=number],input[type=time],input[type=email],select{width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:#fff}
+[hidden]{display:none!important}
+#login{min-height:100vh;display:grid;place-items:center;padding:20px}
+#login form{background:var(--panel);padding:32px;border-radius:10px;width:min(360px,100%);border:1px solid var(--line)}
+#login h1{margin:0 0 4px;font-size:22px}
+#app{display:grid;grid-template-columns:300px 1fr;min-height:100vh}
+aside{background:var(--ink);color:#e7eef2;padding:18px 14px;display:flex;flex-direction:column;gap:14px;max-height:100vh;position:sticky;top:0}
+aside h1{font-size:18px;margin:0 4px}
+aside .sub{color:#8fa3b0;font-size:13px;margin:0 4px}
+#runs{overflow:auto;flex:1;display:flex;flex-direction:column;gap:2px}
+.ri{display:grid;grid-template-columns:12px 1fr;gap:10px;align-items:center;padding:9px 10px;border-radius:6px;cursor:pointer;border:0;background:none;color:inherit;text-align:left;width:100%}
+.ri:hover{background:#1c3140}.ri.sel{background:#24425a}
+.ri small{display:block;color:#8fa3b0}
+.dot{width:10px;height:10px;border-radius:50%;background:#6b7d89}
+.dot.done{background:#47c27f}.dot.failed{background:#ef6a5b}.dot.running{background:#f0b44c;animation:pulse 1.4s infinite}.dot.queued{background:#8fa3b0}.dot.stopped{background:#6b7d89}
+@keyframes pulse{50%{opacity:.35}}
+@media(prefers-reduced-motion:reduce){.dot.running{animation:none}}
+aside nav{display:flex;gap:8px}
+aside nav button{flex:1;background:#1c3140;border-color:#2c4a60;color:#e7eef2}
+main{padding:26px clamp(16px,3vw,40px);min-width:0;max-width:1100px}
+h2{font-size:21px;margin:0 0 4px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:16px 0}
+.panel h3{margin:0 0 12px;font-size:16px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.mute{color:var(--mute)}
+.badge{display:inline-block;padding:1px 10px;border-radius:99px;font-size:13px;font-weight:600;background:#e3e8ec}
+.badge.done{background:#d8f0e3;color:var(--ok)}.badge.failed{background:#f6dcd8;color:var(--bad)}.badge.running{background:#faecd0;color:var(--warn)}
+.rail{display:grid;grid-template-columns:repeat(6,1fr);gap:0;margin:6px 0 2px}
+.st{position:relative;padding-top:22px;font-size:13px;text-align:center;color:var(--mute)}
+.st::before{content:"";position:absolute;top:7px;left:0;right:0;height:4px;background:var(--line)}
+.st::after{content:"";position:absolute;top:2px;left:50%;width:14px;height:14px;margin-left:-7px;border-radius:50%;background:#fff;border:3px solid var(--line)}
+.st.done::before{background:var(--ok)}.st.done::after{background:var(--ok);border-color:var(--ok)}
+.st.active{color:var(--ink);font-weight:600}.st.active::before{background:linear-gradient(90deg,var(--ok),var(--line))}.st.active::after{border-color:var(--warn)}
+.st.failed{color:var(--bad);font-weight:600}.st.failed::before{background:linear-gradient(90deg,var(--ok),var(--bad))}.st.failed::after{background:var(--bad);border-color:var(--bad)}
+.st.stopped::after{border-color:var(--mute)}
+pre#log{margin:0;background:#0f1a22;color:#cfe0ea;padding:14px;border-radius:8px;font:13px/1.5 var(--mono);height:300px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+.gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px}
+.gal button{padding:0;border-radius:6px;overflow:hidden;text-align:left;background:#fff}
+.gal button.err{border:2px solid var(--bad)}
+.gal img{display:block;width:100%;height:105px;object-fit:cover;object-position:top;background:#eee}
+.gal span{display:block;padding:5px 8px;font-size:12px;color:var(--mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+dialog{border:0;border-radius:10px;padding:0;max-width:min(1200px,94vw)}
+dialog::backdrop{background:rgba(10,20,28,.7)}
+dialog img{display:block;max-width:100%;max-height:86vh}
+dialog .cap{padding:10px 14px;display:flex;justify-content:space-between;gap:10px}
+.drop{display:block;border:2px dashed #b8c5ce;border-radius:8px;padding:16px;text-align:center;cursor:pointer;background:#f8fafb}
+.drop.over{border-color:var(--accent);background:#e8f3f7}
+.drop input{display:none}
+.slots{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
+table{width:100%;border-collapse:collapse}
+td,th{padding:7px 6px;border-bottom:1px solid var(--line);text-align:left;font-weight:400}
+.kv{display:grid;grid-template-columns:1fr 1.4fr auto;gap:8px;margin-bottom:8px}
+label.f{display:block;margin-bottom:10px}label.f>span{display:block;font-size:13px;color:var(--mute);margin-bottom:3px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.days{display:flex;gap:6px;flex-wrap:wrap}.days label{border:1px solid var(--line);padding:4px 10px;border-radius:6px;cursor:pointer}
+#toast{position:fixed;bottom:18px;right:18px;background:var(--ink);color:#fff;padding:10px 16px;border-radius:8px;max-width:340px}
+@media(max-width:820px){#app{grid-template-columns:1fr}aside{position:static;max-height:none}#runs{max-height:210px}.rail{font-size:11px}.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<section id="login" hidden>
+  <form id="loginForm">
+    <h1>QIMA RPA control</h1>
+    <p class="mute">Enter the dashboard password to continue.</p>
+    <label class="f"><span>Password</span><input type="password" id="pw" autocomplete="current-password" required autofocus></label>
+    <button class="primary" style="width:100%">Sign in</button>
+    <p id="loginErr" style="color:var(--bad);margin:10px 0 0"></p>
+  </form>
+</section>
+
+<div id="app" hidden>
+  <aside>
+    <div><h1>QIMA RPA control</h1><p class="sub" id="sub"></p></div>
+    <button class="primary" id="newBtn">Start a new run</button>
+    <div id="runs" aria-label="Run history"></div>
+    <nav><button id="setBtn">Settings</button><button id="outBtn">Sign out</button></nav>
+  </aside>
+  <main id="main"></main>
+</div>
+<dialog id="dlg"><img id="dlgImg" alt=""><div class="cap"><span id="dlgCap"></span><button onclick="dlg.close()">Close</button></div></dialog>
+<div id="toast" hidden></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let cur = null, offset = 0, timer = null, lastSig = {};
+
+async function api(path, opts = {}) {
+  const r = await fetch("/api" + path, {credentials: "same-origin", ...opts});
+  if (r.status === 401) { showLogin(); throw new Error("auth"); }
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m } catch {} throw new Error(m); }
+  return r.json();
+}
+const jput = (p, body, method = "PUT") => api(p, {method, headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 4000); }
+const fmt = iso => iso ? new Date(iso).toLocaleString([], {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}) : "";
+const dur = (a, b) => { if (!a) return ""; const s = Math.round(((b ? new Date(b) : new Date()) - new Date(a)) / 1000); return s < 90 ? s + " sec" : Math.round(s / 60) + " min"; };
+const LABEL = {queued: "Queued", running: "Running", done: "Done", failed: "Failed", stopped: "Stopped"};
+const fsize = n => n > 1e6 ? (n / 1e6).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1e3)) + " KB";
+
+/* ---------- auth ---------- */
+function showLogin() { $("#app").hidden = true; $("#login").hidden = false; clearInterval(timer); }
+$("#loginForm").onsubmit = async e => {
+  e.preventDefault();
+  try { await jput("/login", {password: $("#pw").value}, "POST"); $("#login").hidden = true; boot(); }
+  catch (err) { if (err.message !== "auth") $("#loginErr").textContent = err.message; }
+};
+$("#outBtn").onclick = async () => { await api("/logout", {method: "POST"}); showLogin(); };
+
+async function boot() {
+  try { const me = await api("/me"); $("#app").hidden = false; $("#login").hidden = true;
+    $("#sub").textContent = me.script ? "" : "automation/main.py is missing";
+    await loadRuns();
+    const h = location.hash.match(/run=([\w-]+)/);
+    h ? openRun(h[1]) : (cur ? 0 : newRunView());
+    clearInterval(timer); timer = setInterval(tick, 1500);
+  } catch (e) { if (e.message !== "auth") toast(e.message); }
+}
+
+/* ---------- run list ---------- */
+let runsCache = [];
+async function loadRuns() {
+  runsCache = await api("/runs");
+  $("#runs").innerHTML = runsCache.length ? runsCache.map(r => `
+    <button class="ri ${r.id === cur ? "sel" : ""}" data-id="${r.id}"><i class="dot ${r.status}"></i>
+    <span>${LABEL[r.status]}${r.has_errors ? " with errors" : ""}<small>${fmt(r.created)}${r.source !== "manual" ? ", " + r.source : ""}</small></span></button>`).join("")
+    : `<p class="sub">No runs yet. Start one to see it here.</p>`;
+  document.querySelectorAll(".ri").forEach(b => b.onclick = () => openRun(b.dataset.id));
+}
+let n = 0;
+async function tick() {
+  if (!$("#app").hidden) {
+    if (++n % 3 === 0) loadRuns().catch(() => {});
+    if (cur && $("#log")) pollRun().catch(() => {});
+  }
+}
+
+/* ---------- new run ---------- */
+$("#newBtn").onclick = newRunView;
+function newRunView() {
+  cur = null; location.hash = ""; loadRuns();
+  const hasPrev = runsCache.length > 0;
+  const slot = (id, title, hint, multi) => `<div><strong>${title}</strong>
+    <label class="drop" data-slot="${id}"><input type="file" id="f_${id}" ${multi ? "multiple accept='.pdf'" : "accept='.xlsx,.xls'"}>
+    <span class="t">Drop ${multi ? "PDFs" : "file"} here or click to browse</span></label>
+    <div class="mute" style="font-size:13px;margin-top:4px">${hasPrev ? hint : "Required for the first run."}</div></div>`;
+  $("#main").innerHTML = `<h2>Start a new run</h2>
+  <p class="mute">Files you leave empty are taken from the previous run, so you only upload what changed.</p>
+  <div class="panel"><div class="slots">
+    ${slot("booking", "booking.xlsx", "Empty: previous file is reused.")}
+    ${slot("booking_list", "booking_list.xlsx", "Empty: previous file is reused.")}
+    ${slot("po_pdfs", "PO PDFs", "Empty: previous PDFs are reused.", true)}
+  </div><div class="row" style="margin-top:16px"><button class="primary" id="go">Start run</button><span class="mute" id="goMsg"></span></div></div>`;
+  document.querySelectorAll(".drop").forEach(z => {
+    const inp = z.querySelector("input"), t = z.querySelector(".t");
+    const show = () => t.textContent = inp.files.length ? [...inp.files].map(f => f.name).join(", ") : "Drop here or click to browse";
+    inp.onchange = show;
+    ["dragenter", "dragover"].forEach(ev => z.addEventListener(ev, e => { e.preventDefault(); z.classList.add("over"); }));
+    ["dragleave", "drop"].forEach(ev => z.addEventListener(ev, e => { e.preventDefault(); z.classList.remove("over"); }));
+    z.addEventListener("drop", e => { inp.files = e.dataTransfer.files; show(); });
+  });
+  $("#go").onclick = async () => {
+    const fd = new FormData();
+    for (const id of ["booking", "booking_list", "po_pdfs"]) for (const f of $("#f_" + id).files) fd.append(id, f);
+    $("#go").disabled = true; $("#goMsg").textContent = "Uploading...";
+    try { const r = await api("/runs", {method: "POST", body: fd}); await loadRuns(); openRun(r.id); }
+    catch (e) { $("#goMsg").textContent = e.message; $("#go").disabled = false; }
+  };
+}
+
+/* ---------- run detail ---------- */
+async function openRun(id) {
+  cur = id; offset = 0; lastSig = {}; location.hash = "run=" + id; loadRuns();
+  $("#main").innerHTML = `<div id="head"></div>
+    <div class="panel"><h3>Progress</h3><div class="rail" id="rail"></div></div>
+    <div class="panel"><h3>Live log</h3><pre id="log"></pre></div>
+    <div class="panel"><h3>Screenshots</h3><div class="gal" id="gal"></div></div>
+    <div class="panel"><h3>Files</h3><div id="files"></div></div>`;
+  try { await pollRun(); } catch (e) { if (e.message !== "auth") $("#main").innerHTML = `<p>${esc(e.message)}</p>`; }
+}
+async function pollRun() {
+  const id = cur, d = await api(`/runs/${id}?offset=${offset}`);
+  if (id !== cur || !$("#log")) return;
+  const r = d.run, log = $("#log"), stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+  offset = d.offset;
+  if (d.log) { log.textContent += d.log; if (stick) log.scrollTop = log.scrollHeight; }
+  else if (!log.textContent && r.status !== "queued") log.textContent = "Waiting for output...";
+  const live = r.status === "running" || r.status === "queued";
+  const set = (key, html, el) => { const s = JSON.stringify([html, r.status]); if (lastSig[key] !== s) { lastSig[key] = s; $(el).innerHTML = html; } };
+  set("head", `<div class="row" style="justify-content:space-between"><div><h2>Run ${esc(r.id)}</h2>
+    <span class="badge ${r.status}">${LABEL[r.status]}</span>
+    <span class="mute"> ${r.status === "queued" ? (d.queue_position ? "Position " + d.queue_position + " in the queue" : "Waiting to start") : "Started " + fmt(r.started) + ", " + dur(r.started, r.finished)}</span>
+    ${r.note ? `<div style="color:${r.status === "failed" ? "var(--bad)" : "var(--warn)"};margin-top:4px">${esc(r.note)}</div>` : ""}</div>
+    <div class="row">${live ? `<button class="danger" id="stopB">Stop run</button>` : `<button class="primary" id="retryB">Retry with same files</button><button id="zipB">Download all</button><button class="danger" id="delB">Delete</button>`}</div></div>`, "#head");
+  if ($("#stopB")) $("#stopB").onclick = async () => { await api(`/runs/${id}/stop`, {method: "POST"}); toast("Stopping..."); pollRun(); };
+  if ($("#retryB")) $("#retryB").onclick = async () => { const n = await api(`/runs/${id}/retry`, {method: "POST"}); await loadRuns(); openRun(n.id); };
+  if ($("#zipB")) $("#zipB").onclick = () => location.href = `/api/runs/${id}/zip`;
+  if ($("#delB")) $("#delB").onclick = async () => { if (confirm("Delete this run and its files?")) { await api(`/runs/${id}`, {method: "DELETE"}); await loadRuns(); newRunView(); } };
+  set("rail", d.steps.map(s => `<div class="st ${s.state}">${esc(s.label)}</div>`).join(""), "#rail");
+  set("gal", d.shots.length ? d.shots.map(s => {
+      const m = s.name.match(/^(\d\d)(\d\d)(\d\d)_(.+)\.png$/), cap = m ? `${m[1]}:${m[2]}:${m[3]} ${m[4].replace(/_/g, " ")}` : s.name;
+      return `<button class="${s.error ? "err" : ""}" data-n="${esc(s.name)}" data-c="${esc(cap)}"><img loading="lazy" src="/api/runs/${id}/file/logs/${encodeURIComponent(s.name)}" alt=""><span>${esc(cap)}</span></button>`;
+    }).join("") : `<p class="mute">Screenshots from the script appear here as it runs.</p>`, "#gal");
+  document.querySelectorAll("#gal button[data-n]").forEach(b => b.onclick = () => {
+    $("#dlgImg").src = `/api/runs/${id}/file/logs/${encodeURIComponent(b.dataset.n)}`; $("#dlgCap").textContent = b.dataset.c; $("#dlg").showModal(); });
+  const row = f => `<tr><td>${esc(f.path)}</td><td class="mute">${fsize(f.size)}</td><td><a href="/api/runs/${id}/file/${f.path.split("/").map(encodeURIComponent).join("/")}?download=1">Download</a></td></tr>`;
+  const out = d.files.filter(f => f.kind === "output"), inp = d.files.filter(f => f.kind === "input");
+  set("files", (out.length ? `<strong>Created by the script</strong><table>${out.map(row).join("")}</table>` : "") +
+    (inp.length ? `<strong>Input files</strong> <span class="mute">(the script may update these in place)</span><table>${inp.map(row).join("")}</table>` : ""), "#files");
+}
+
+/* ---------- settings ---------- */
+$("#setBtn").onclick = async () => {
+  cur = null; location.hash = ""; loadRuns();
+  const s = await api("/settings"), days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const kv = (k, v) => `<div class="kv"><input type="text" class="k" value="${esc(k)}" placeholder="NAME"><input type="${/pass|pwd|secret|token|key/i.test(k) ? "password" : "text"}" class="v" value="${esc(v)}" placeholder="value"><button type="button" onclick="this.parentNode.remove()">Remove</button></div>`;
+  $("#main").innerHTML = `<h2>Settings</h2><p class="mute">Saved on the server only. Secrets are never sent back to the browser.</p>
+  <div class="panel"><h3>Portal credentials and variables</h3>
+    <p class="mute" style="margin-top:0">These become the script's .env file for every run. Copy the names from your .env.example (for example the portal username and password).</p>
+    <div id="kvs">${Object.entries(s.env).map(([k, v]) => kv(k, v)).join("")}</div>
+    <button type="button" id="addKv">Add variable</button></div>
+  <div class="panel"><h3>Run options</h3><div class="grid2">
+    <label class="f"><span>Stop a run automatically after (minutes)</span><input type="number" id="timeout" min="1" value="${s.timeout_min}"></label>
+    <label class="f"><span>Browser mode hint (sets HEADLESS)</span><select id="headless"><option value="true" ${s.headless ? "selected" : ""}>Headless</option><option value="false" ${s.headless ? "" : "selected"}>Visible (virtual display)</option></select></label></div></div>
+  <div class="panel"><h3>Alerts</h3>
+    <label class="f"><span>Send alerts</span><select id="alertOn"><option value="problems">When a run fails or has error screenshots</option><option value="always">After every run</option><option value="never">Never</option></select></label>
+    <label class="f"><span>Slack incoming webhook URL</span><input type="password" id="slack" value="${esc(s.slack_webhook)}" autocomplete="off"></label>
+    <label class="row" style="margin-bottom:10px"><input type="checkbox" id="mailOn" ${s.email.enabled ? "checked" : ""}> Send email alerts</label>
+    <div class="grid2"><label class="f"><span>SMTP host</span><input type="text" id="mHost" value="${esc(s.email.host)}"></label><label class="f"><span>SMTP port</span><input type="number" id="mPort" value="${s.email.port}"></label>
+    <label class="f"><span>SMTP user</span><input type="text" id="mUser" value="${esc(s.email.user)}"></label><label class="f"><span>SMTP password</span><input type="password" id="mPass" value="${esc(s.email.password)}" autocomplete="off"></label>
+    <label class="f"><span>From address</span><input type="email" id="mFrom" value="${esc(s.email.from)}"></label><label class="f"><span>Send to</span><input type="email" id="mTo" value="${esc(s.email.to)}"></label></div>
+    <button type="button" id="testAlert">Save and send a test alert</button></div>
+  <div class="panel"><h3>Schedule</h3>
+    <label class="row" style="margin-bottom:10px"><input type="checkbox" id="schOn" ${s.schedule.enabled ? "checked" : ""}> Run automatically, reusing the files from the latest run</label>
+    <div class="grid2"><label class="f"><span>Time (server clock)</span><input type="time" id="schTime" value="${s.schedule.time}"></label>
+    <div><span class="mute" style="font-size:13px">Days</span><div class="days">${days.map((d, i) => `<label><input type="checkbox" class="day" value="${i}" ${s.schedule.days.includes(i) ? "checked" : ""}> ${d}</label>`).join("")}</div></div></div></div>
+  <button class="primary" id="saveSet">Save settings</button>`;
+  $("#alertOn").value = s.alert_on;
+  $("#addKv").onclick = () => $("#kvs").insertAdjacentHTML("beforeend", kv("", ""));
+  const collect = () => ({
+    env: Object.fromEntries([...document.querySelectorAll("#kvs .kv")].map(r => [r.querySelector(".k").value, r.querySelector(".v").value])),
+    timeout_min: +$("#timeout").value, headless: $("#headless").value === "true", alert_on: $("#alertOn").value, slack_webhook: $("#slack").value,
+    email: {enabled: $("#mailOn").checked, host: $("#mHost").value, port: +$("#mPort").value, user: $("#mUser").value, password: $("#mPass").value, from: $("#mFrom").value, to: $("#mTo").value},
+    schedule: {enabled: $("#schOn").checked, time: $("#schTime").value, days: [...document.querySelectorAll(".day:checked")].map(c => +c.value)}});
+  $("#saveSet").onclick = async () => { try { await jput("/settings", collect()); toast("Settings saved"); $("#setBtn").click(); } catch (e) { toast(e.message); } };
+  $("#testAlert").onclick = async () => { try { await jput("/settings", collect());
+    const r = await api("/settings/test-alert", {method: "POST"}); toast(r.ok ? "Test alert sent" : r.errors.join("; ") || "No alert channel is set up"); } catch (e) { toast(e.message); } };
+};
+
+boot();
+</script>
+</body>
+</html>
