@@ -33,14 +33,18 @@ def load_meta(rd: Path) -> dict:
 
 
 def save_meta(rd: Path, m: dict) -> None:
-    (rd / "run.json").write_text(json.dumps(m, indent=2))
+    tmp = rd / "run.json.tmp"  # write then swap, so the UI never reads a half-written file
+    tmp.write_text(json.dumps(m, indent=2))
+    os.replace(tmp, rd / "run.json")
 
 
 def list_runs() -> list:
     out = []
     for p in sorted(RUNS.iterdir(), reverse=True):
-        if (p / "run.json").exists():
+        try:
             out.append(load_meta(p))
+        except (OSError, ValueError):
+            continue
     return out
 
 
@@ -121,8 +125,21 @@ def stop(rd: Path, proc) -> None:
         terminate(proc)
 
 
+_LOG_CACHE = {}
+
+
 def log_info(rd: Path):
     f = rd / "run.log"
+    sig = (f.stat().st_mtime_ns, f.stat().st_size) if f.exists() else None
+    hit = _LOG_CACHE.get(rd.name)
+    if hit and hit[0] == sig:  # the log has not changed since the last 2-second refresh
+        return hit[1]
+    res = _parse_log(f)
+    _LOG_CACHE[rd.name] = (sig, res)
+    return res
+
+
+def _parse_log(f: Path):
     text = f.read_text("utf-8", "replace") if f.exists() else ""
     cur, shots = None, []
     for line in text.splitlines():
@@ -254,6 +271,9 @@ def _start_queued(rd: Path, m: dict, env: dict):
 
 def tick(rt: dict, cfg: dict) -> None:
     """One pass of the worker: finish ended runs, then start queued runs while slots are free."""
+    if time.time() - rt.get("pruned", 0) > 3600:
+        rt["pruned"] = time.time()
+        prune_runs()
     with rt["lock"]:
         procs = rt["procs"]
         for rid, proc in list(procs.items()):
@@ -274,3 +294,41 @@ def tick(rt: dict, cfg: dict) -> None:
             except Exception as e:
                 m.update(status="failed", finished=now(), note=f"Could not start: {e}")
                 save_meta(rd, m)
+
+
+# ------------------------------------------------------- preflight and cleanup
+def validate_inputs(booking_list=None, pdfs=None) -> list:
+    """Return plain-language problems found before a run is created. An empty list means good to go."""
+    problems = []
+    if booking_list:
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(io.BytesIO(booking_list), read_only=True, data_only=True)
+            if "Bookings" not in wb.sheetnames:
+                problems.append("booking_list.xlsx needs a sheet named Bookings.")
+            else:
+                head = [str(c or "").strip().lower() for c in next(wb["Bookings"].iter_rows(values_only=True), [])]
+                problems += [f"booking_list.xlsx is missing the column '{c}'." for c in ("booking ref no.", "supplier") if c not in head]
+        except Exception:
+            problems.append("booking_list.xlsx could not be opened. Save it again as .xlsx.")
+    for name, data in pdfs or []:
+        if not data.startswith(b"%PDF"):
+            problems.append(f"{name} is not a valid PDF.")
+    return problems
+
+
+def prune_runs(keep: int = 60, max_age_days: int = 30) -> int:
+    """Delete old finished runs so storage does not fill up. Queued and running runs are never touched."""
+    cutoff, removed = time.time() - max_age_days * 86400, 0
+    runs = [p for p in sorted(RUNS.iterdir(), reverse=True) if (p / "run.json").exists()]
+    for i, p in enumerate(runs):
+        try:
+            if load_meta(p)["status"] in ("queued", "running"):
+                continue
+            if i >= keep or p.stat().st_mtime < cutoff:
+                shutil.rmtree(p, ignore_errors=True)
+                _LOG_CACHE.pop(p.name, None)
+                removed += 1
+        except (OSError, ValueError, KeyError):
+            continue
+    return removed

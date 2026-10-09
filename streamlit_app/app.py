@@ -16,7 +16,7 @@ import streamlit as st
 import core
 import ui
 
-st.set_page_config(page_title="QIMA Booking Automation", page_icon="Q", layout="wide")
+st.set_page_config(page_title="QIMA booking desk", page_icon=":material/inventory_2:", layout="wide")
 st.markdown(ui.CSS, unsafe_allow_html=True)
 
 
@@ -35,7 +35,7 @@ if not APP_PASSWORD:
 if not st.session_state.get("ok"):
     _, mid, _ = st.columns([1, 1.2, 1])
     with mid:
-        st.markdown(ui.hero("QIMA Booking Automation", "Sign in to control your booking runs", "Secure access", "ok"), unsafe_allow_html=True)
+        st.markdown(ui.hero("QIMA booking desk", "Sign in to start and watch booking runs.", "Private", "ok"), unsafe_allow_html=True)
         with st.form("login"):
             pw = st.text_input("Dashboard password", type="password")
             if st.form_submit_button("Sign in", type="primary", use_container_width=True):
@@ -143,8 +143,8 @@ def po_numbers(data: bytes) -> list:
 
 
 def status_style(df):
-    colors = {"DONE": "#d1fae5;color:#065f46", "DRYRUN_OK": "#fef3c7;color:#92400e",
-              "FAILED": "#fee2e2;color:#991b1b", "PENDING": "#e2e8f0;color:#475569"}
+    colors = {"DONE": "#e5f5ee;color:#075c3d", "DRYRUN_OK": "#fdf1dc;color:#7a4800",
+              "FAILED": "#fbe9e7;color:#8f2118", "PENDING": "#e9eeed;color:#566772"}
     fn = lambda v: f"background-color:{colors[v]};font-weight:600" if v in colors else ""  # noqa: E731
     sty = df.style
     return (sty.map if hasattr(sty, "map") else sty.applymap)(fn, subset=["Status"])
@@ -200,7 +200,7 @@ def page_overview():
         if runs:
             df = pd.DataFrame({"day": [m["created"][:10] for m in runs], "status": [LABEL[m["status"]] for m in runs]})
             piv = df.pivot_table(index="day", columns="status", aggfunc="size", fill_value=0).reindex(columns=["Done", "Failed", "Stopped"], fill_value=0)
-            st.bar_chart(piv, color=["#10b981", "#ef4444", "#94a3b8"], height=240)
+            st.bar_chart(piv, color=["#0b8a5b", "#c8372d", "#8fa0aa"], height=240)
         else:
             st.markdown(ui.guide(), unsafe_allow_html=True)
     with right:
@@ -253,13 +253,20 @@ def page_new():
         o1, o2 = st.columns([3, 1])
         dry = o1.checkbox("Dry run: stop at Inspection Details and mark rows DRYRUN_OK", value=False)
         if o2.button("Add to queue" if busy else "Start run", type="primary", use_container_width=True, disabled=bool(missing)):
+            issues = core.validate_inputs(f_list.getvalue() if f_list else None, [(f.name, f.getvalue()) for f in f_pdf or []])
+            for msg in issues:
+                st.error(msg)
             try:
+                if issues:
+                    st.stop()
                 ensure_browser()
                 rd = core.create_run(f_book.getvalue() if f_book else None, f_list.getvalue() if f_list else None,
                                      [(f.name, f.getvalue()) for f in f_pdf or []], dry,
                                      ti=f_ti.getvalue() if f_ti else None)
                 st.session_state["view"] = rd.name
                 st.switch_page(PAGES["monitor"])
+            except st.errors.StreamlitAPIException:
+                raise
             except Exception as e:
                 st.error(str(e))
         if busy:
