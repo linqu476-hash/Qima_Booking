@@ -48,7 +48,7 @@ def env_file_text(env: dict) -> str:
     return "".join("{}='{}'\n".format(k, str(v).replace("\\", "\\\\").replace("'", "\\'")) for k, v in env.items())
 
 
-def create_run(booking, booking_list, pdfs, dry_run: bool, base: Path = None) -> Path:
+def create_run(booking, booking_list, pdfs, dry_run: bool, base: Path = None, ti=None) -> Path:
     """booking/booking_list are bytes or None; pdfs is a list of (name, bytes).
     Empty slots reuse the previous run's files, including the Status column the script wrote,
     so rows already DONE are skipped."""
@@ -63,6 +63,8 @@ def create_run(booking, booking_list, pdfs, dry_run: bool, base: Path = None) ->
         (rd / "input" / "booking.xlsx").write_bytes(booking)
     if booking_list:
         (rd / "input" / "booking_list.xlsx").write_bytes(booking_list)
+    if ti:
+        (rd / "input" / "technical_info.xlsx").write_bytes(ti)
     if pdfs:
         shutil.rmtree(rd / "input" / "po_pdf", ignore_errors=True)
         (rd / "input" / "po_pdf").mkdir()

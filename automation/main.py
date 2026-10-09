@@ -210,6 +210,20 @@ def resolve_input(raw: str, default: str) -> Path:
     return p
 
 
+def ti_excel_path():
+    """Technical Sheet (TI) Excel that is attached in the Purchase order (PO) box after the PO PDFs.
+    Default input/technical_info.xlsx, or set TI_EXCEL. Returns None when the file is not there."""
+    p = resolve_input(os.getenv("TI_EXCEL") or "", "input/technical_info.xlsx")
+    return p if p.exists() else None
+
+
+def files_for_tab(files, ti, idx, total, mode):
+    """Files to put in the PO box of tab idx (0-based). TI_UPLOAD=last (default): the TI Excel goes with the
+    last PO tab only, so it is uploaded once after all PO PDFs. TI_UPLOAD=each: it goes with every PO tab."""
+    attach = bool(ti) and (mode == "each" or idx == total - 1)
+    return list(files) + ([ti] if attach else []), attach
+
+
 def check_env():
     for k in ("QIMA_USER", "QIMA_PASS"):
         if not cfg[k]:
@@ -550,8 +564,9 @@ def pdfs_for_po(po: str, pdfs):
     return [p for p in pdfs if d in po_digits(p.name) or (short and short in po_digits(p.name))]
 
 
-def product_information(page: Page, pdfs):
-    """Step 2 of 4: for every PO tab -> click tab -> upload matching PO pdf."""
+def product_information(page: Page, pdfs, ti=None):
+    """Step 2 of 4: for every PO tab -> click tab -> upload matching PO pdf.
+    After the last PO PDF the TI Excel is uploaded into the same Purchase order (PO) box."""
     page, fr = find_form_frame(page, timeout=60_000, pattern=r"Purchase order")
     page.wait_for_timeout(2000)
     shot(page, "product_info")
@@ -562,8 +577,11 @@ def product_information(page: Page, pdfs):
         shot(page, "no_po_tabs")
         raise RuntimeError("No PO tabs found on Product Information - see logs/*_no_po_tabs.png")
 
+    ti_mode = (os.getenv("TI_UPLOAD") or "last").strip().lower()
+    if ti:
+        log.info("TI Excel to attach: %s (mode=%s)", ti.name, ti_mode)
     uploaded, missing, failed = [], [], []
-    for po in po_list:
+    for idx, po in enumerate(po_list):
         # re-find the tab each time (page re-renders after a click)
         tab = next((el for t, el in get_po_tabs(fr) if t == po), None)
         if tab is None:
@@ -577,6 +595,8 @@ def product_information(page: Page, pdfs):
         if not files:
             log.warning("PO %s: no matching PDF in %s", po, cfg["PO_PDF_DIR"])
             missing.append(po)
+        to_upload, attach_ti = files_for_tab(files, ti, idx, len(po_list), ti_mode)
+        if not to_upload:
             continue
         try:
             fin = fr.locator(
@@ -585,10 +605,17 @@ def product_information(page: Page, pdfs):
             if fin.count() == 0:
                 fin = fr.locator("input[type='file']").last
             fin.wait_for(state="attached", timeout=15_000)
-            fin.set_input_files([str(f) for f in files])
+            fin.set_input_files([str(f) for f in to_upload])      # PDF(s) and, on the last tab, the TI Excel
             # verify the file name is shown
-            fr.get_by_text(files[0].name).first.wait_for(state="visible", timeout=20_000)
-            log.info("PO %s <- %s", po, [f.name for f in files])
+            fr.get_by_text(to_upload[0].name).first.wait_for(state="visible", timeout=20_000)
+            log.info("PO %s <- %s", po, [f.name for f in to_upload])
+            if attach_ti:
+                try:
+                    fr.get_by_text(ti.name).first.wait_for(state="visible", timeout=10_000)
+                    log.info("TI Excel attached in the PO box of %s", po)
+                except PWTimeout:
+                    log.warning("TI Excel name not visible after upload on PO %s (long names may be shortened)", po)
+                    shot(page, "ti_check")
             uploaded.append(po)
         except Exception as e:
             log.error("PO %s upload failed: %s", po, e)
@@ -666,10 +693,13 @@ def main():
                 log.info("===== booking %d/%d  ref=%s  (excel row %d) =====", n, len(jobs), job["ref"], job["row"])
                 try:
                     excel, pdfs = prepare_job(job)
+                    ti = ti_excel_path()
+                    if not ti:
+                        log.warning("No TI Excel found (input/technical_info.xlsx): continuing without it")
                     log.info("date=%s time=%s supplier=%s", cfg["START_DATE"], cfg["START_TIME"], cfg["SUPPLIER_NAME"])
                     page = open_product_inspection(page)
                     general_information(page, excel)
-                    page = product_information(page, pdfs)
+                    page = product_information(page, pdfs, ti)
                     page = next_to_inspection_details(page)
                     save_links(page, job["ref"])
                     # ---- step 3 (Inspection Details) / step 4 (Review) can be added here ----

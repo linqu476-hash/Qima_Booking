@@ -142,7 +142,8 @@ def all_runs() -> List[dict]:
 
 
 def create_run(booking: Optional[UploadFile], booking_list: Optional[UploadFile],
-               pdfs: List[UploadFile], base: Optional[str], source: str) -> dict:
+               pdfs: List[UploadFile], base: Optional[str], source: str,
+               ti_excel: Optional[UploadFile] = None) -> dict:
     pdfs = [p for p in pdfs if p.filename]
     runs = all_runs()
     if not (booking and booking.filename and booking_list and booking_list.filename and pdfs):
@@ -168,6 +169,8 @@ def create_run(booking: Optional[UploadFile], booking_list: Optional[UploadFile]
         put(booking, d / "input" / "booking.xlsx")
     if booking_list and booking_list.filename:
         put(booking_list, d / "input" / "booking_list.xlsx")
+    if ti_excel and ti_excel.filename:
+        put(ti_excel, d / "input" / "technical_info.xlsx")
     if pdfs:
         shutil.rmtree(d / "input" / "po_pdf", ignore_errors=True)
         for p in pdfs:
@@ -457,8 +460,9 @@ def list_runs():
 
 @app.post("/api/runs", dependencies=[Depends(auth)])
 async def new_run(booking: Optional[UploadFile] = File(None), booking_list: Optional[UploadFile] = File(None),
-            po_pdfs: List[UploadFile] = File(default=[]), base: Optional[str] = Form(None)):
-    return create_run(booking, booking_list, po_pdfs, base, "manual")
+            po_pdfs: List[UploadFile] = File(default=[]), ti_excel: Optional[UploadFile] = File(None),
+                  base: Optional[str] = Form(None)):
+    return create_run(booking, booking_list, po_pdfs, base, "manual", ti_excel)
 
 
 @app.get("/api/runs/{rid}", dependencies=[Depends(auth)])

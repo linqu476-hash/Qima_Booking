@@ -170,6 +170,7 @@ function newRunView() {
     ${slot("booking", "booking.xlsx", "Empty: previous file is reused.")}
     ${slot("booking_list", "booking_list.xlsx", "Empty: previous file is reused.")}
     ${slot("po_pdfs", "PO PDFs", "Empty: previous PDFs are reused.", true)}
+    ${slot("ti_excel", "Technical sheet (TI) Excel", "Attached in the PO box after the last PO PDF. Empty: previous file is reused.")}
   </div><div class="row" style="margin-top:16px"><button class="primary" id="go">Start run</button><span class="mute" id="goMsg"></span></div></div>`;
   document.querySelectorAll(".drop").forEach(z => {
     const inp = z.querySelector("input"), t = z.querySelector(".t");
@@ -181,7 +182,7 @@ function newRunView() {
   });
   $("#go").onclick = async () => {
     const fd = new FormData();
-    for (const id of ["booking", "booking_list", "po_pdfs"]) for (const f of $("#f_" + id).files) fd.append(id, f);
+    for (const id of ["booking", "booking_list", "po_pdfs", "ti_excel"]) for (const f of $("#f_" + id).files) fd.append(id, f);
     $("#go").disabled = true; $("#goMsg").textContent = "Uploading...";
     try { const r = await api("/runs", {method: "POST", body: fd}); await loadRuns(); openRun(r.id); }
     catch (e) { $("#goMsg").textContent = e.message; $("#go").disabled = false; }

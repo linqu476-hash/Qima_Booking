@@ -77,10 +77,11 @@ for _m in core.list_runs():  # settle finished runs first so the list and sideba
         core.refresh_status(_rd, runtime()["proc"] if runtime()["dir"] == _rd else None, TIMEOUT_MIN)
 runs = core.list_runs()
 with st.expander("Start a new run", expanded=not runs):
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     f_book = c1.file_uploader("booking.xlsx", type=["xlsx"])
     f_list = c2.file_uploader("booking_list.xlsx", type=["xlsx"])
     f_pdf = c3.file_uploader("PO PDFs", type=["pdf"], accept_multiple_files=True)
+    f_ti = c4.file_uploader("Technical sheet (TI) Excel", type=["xlsx"], help="Attached in the PO box after the last PO PDF.")
     st.caption("Empty slots reuse the previous run's files, including its Status column, so rows already DONE "
                "are skipped. This app's storage is wiped when it restarts or sleeps: after that, upload "
                "the updated booking_list.xlsx you downloaded from the last run.")
@@ -89,7 +90,8 @@ with st.expander("Start a new run", expanded=not runs):
         try:
             ensure_browser()
             rd = core.create_run(f_book.getvalue() if f_book else None, f_list.getvalue() if f_list else None,
-                                 [(f.name, f.getvalue()) for f in f_pdf or []], dry)
+                                 [(f.name, f.getvalue()) for f in f_pdf or []], dry,
+                                 ti=f_ti.getvalue() if f_ti else None)
             launch(rd, dry)
             st.session_state["view"] = rd.name
             st.rerun()
