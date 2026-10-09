@@ -182,7 +182,7 @@ def page_overview():
     avg = fmt_secs(sum(run_secs(m) for m in ended) / len(ended)) if ended else "-"
     st.markdown(ui.kpis([("Runs", len(runs), "info"), ("Bookings processed", len(res), "info"),
                          ("Success rate", f"{round(100 * good / len(res))}%" if res else "-", "ok"),
-                         ("Failed bookings", bad, "bad"), ("Average run time", avg, "warn")]), unsafe_allow_html=True)
+                         ("Failed bookings", bad, "bad"), ("Average run time", avg, "teal")]), unsafe_allow_html=True)
     left, right = st.columns([2, 1])
     with left:
         st.markdown('<div class="sec">Runs per day</div>', unsafe_allow_html=True)
@@ -191,7 +191,7 @@ def page_overview():
             piv = df.pivot_table(index="day", columns="status", aggfunc="size", fill_value=0).reindex(columns=["Done", "Failed", "Stopped"], fill_value=0)
             st.bar_chart(piv, color=["#10b981", "#ef4444", "#94a3b8"], height=240)
         else:
-            st.markdown('<div class="card">No runs yet. Start one from <b>New run</b>.</div>', unsafe_allow_html=True)
+            st.markdown(ui.guide(), unsafe_allow_html=True)
     with right:
         st.markdown('<div class="sec">System</div>', unsafe_allow_html=True)
         browser = any((Path.home() / ".cache" / "ms-playwright").glob("chromium*")) if (Path.home() / ".cache" / "ms-playwright").exists() else False
@@ -210,10 +210,18 @@ def page_new():
     st.markdown('<div class="sec">Input files<small>Empty slots reuse the previous run\'s files, so you only upload what changed.</small></div>', unsafe_allow_html=True)
     with st.container(border=True):
         c1, c2, c3, c4 = st.columns(4)
-        f_list = c1.file_uploader("1  booking_list.xlsx", type=["xlsx"], help="The list of bookings and their Status.")
-        f_book = c2.file_uploader("2  booking.xlsx", type=["xlsx"], help="Uploaded on the General Information step.")
-        f_pdf = c3.file_uploader("3  PO PDFs", type=["pdf"], accept_multiple_files=True)
-        f_ti = c4.file_uploader("4  Technical sheet (TI) Excel", type=["xlsx"], help="Attached in the PO box after the last PO PDF.")
+        with c1:
+            st.markdown(ui.slot_head(1, "Booking list", "booking_list.xlsx", "#6366f1"), unsafe_allow_html=True)
+            f_list = st.file_uploader("booking_list.xlsx", type=["xlsx"], label_visibility="collapsed", help="The list of bookings and their Status.")
+        with c2:
+            st.markdown(ui.slot_head(2, "Booking file", "booking.xlsx", "#0ea5e9"), unsafe_allow_html=True)
+            f_book = st.file_uploader("booking.xlsx", type=["xlsx"], label_visibility="collapsed", help="Uploaded on the General Information step.")
+        with c3:
+            st.markdown(ui.slot_head(3, "PO PDFs", "one PDF per PO", "#f43f5e"), unsafe_allow_html=True)
+            f_pdf = st.file_uploader("PO PDFs", type=["pdf"], accept_multiple_files=True, label_visibility="collapsed")
+        with c4:
+            st.markdown(ui.slot_head(4, "Technical sheet", "TI Excel", "#f59e0b"), unsafe_allow_html=True)
+            f_ti = st.file_uploader("Technical sheet (TI) Excel", type=["xlsx"], label_visibility="collapsed", help="Attached in the PO box after the last PO PDF.")
 
         previews = [(n, f) for n, f in (("booking_list.xlsx", f_list), ("booking.xlsx", f_book), ("Technical sheet (TI)", f_ti)) if f]
         if previews:
@@ -293,7 +301,7 @@ def render(rid):
     cnt = lambda *s: sum(r["Status"] in s for r in rows)  # noqa: E731
     st.markdown(ui.kpis([("Bookings", len(rows), "info"), ("Completed", cnt("DONE", "DRYRUN_OK"), "ok"),
                          ("Failed", cnt("FAILED"), "bad"), ("Pending", cnt("PENDING"), "warn"),
-                         ("Elapsed", f"{secs // 60}m {secs % 60:02d}s", "info")]), unsafe_allow_html=True)
+                         ("Elapsed", f"{secs // 60}m {secs % 60:02d}s", "teal")]), unsafe_allow_html=True)
     st.markdown(ui.rail(core.progress(step_shots, m["status"])), unsafe_allow_html=True)
 
     b1, b2, b3, _ = st.columns([1, 1.2, 1.6, 3])
@@ -375,13 +383,12 @@ def page_monitor():
         render(rid)
 
 
-PAGES["overview"] = st.Page(page_overview, title="Overview", default=True)
-PAGES["new"] = st.Page(page_new, title="New run")
-PAGES["monitor"] = st.Page(page_monitor, title="Run monitor")
-PAGES["history"] = st.Page(page_history, title="History")
+PAGES["overview"] = st.Page(page_overview, title="Overview", icon=":material/dashboard:", default=True)
+PAGES["new"] = st.Page(page_new, title="New run", icon=":material/upload_file:")
+PAGES["monitor"] = st.Page(page_monitor, title="Run monitor", icon=":material/monitoring:")
+PAGES["history"] = st.Page(page_history, title="History", icon=":material/history:")
 nav = st.navigation(list(PAGES.values()))
 with st.sidebar:
-    st.markdown('<div class="brand"><div class="logo">Q</div><b>QIMA Automation</b></div>', unsafe_allow_html=True)
     if st.button("Sign out", use_container_width=True):
         st.session_state.clear()
         st.rerun()
