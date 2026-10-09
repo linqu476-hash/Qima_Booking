@@ -2,6 +2,8 @@
 import hmac
 import io
 import re
+import threading
+import traceback
 from pathlib import Path
 import subprocess
 import sys
@@ -50,7 +52,18 @@ PORTAL_ENV = {k: str(v) for k, v in dict(st.secrets).items() if isinstance(v, (s
 
 @st.cache_resource
 def runtime():
-    return {"proc": None, "dir": None}  # one run at a time, shared by every browser session
+    """Shared by every browser session: a background worker that runs queued runs one after another."""
+    rt = {"procs": {}, "lock": threading.Lock(), "cfg": {"env": {}, "timeout": 45, "max_parallel": 1}}
+
+    def loop():
+        while True:
+            try:
+                core.tick(rt, rt["cfg"])
+            except Exception:
+                traceback.print_exc()
+            time.sleep(2)
+    threading.Thread(target=loop, daemon=True, name="qima-worker").start()
+    return rt
 
 
 @st.cache_resource(show_spinner="First start: installing the browser, this takes a few minutes...")
@@ -62,15 +75,17 @@ def ensure_browser():
     return True
 
 
-def active_run():
-    rt = runtime()
-    return rt["dir"] if rt["dir"] and rt["proc"] is not None and rt["proc"].poll() is None else None
+MAX_PARALLEL = max(1, int(secret("MAX_PARALLEL", 1)))
+runtime()["cfg"].update(env=PORTAL_ENV, timeout=TIMEOUT_MIN, max_parallel=MAX_PARALLEL)
 
 
-def launch(rd, dry_run):
-    rt = runtime()
-    rt["proc"] = core.start(rd, PORTAL_ENV, dry_run)
-    rt["dir"] = rd
+def is_busy(runs):
+    return any(m["status"] in ("running", "queued") for m in runs)
+
+
+def queue_label(runs):
+    r, q = sum(m["status"] == "running" for m in runs), sum(m["status"] == "queued" for m in runs)
+    return f"{r} running, {q} queued" if q else ("Run in progress" if r else "Ready")
 
 
 # ----------------------------------------------------------- Excel preview
@@ -137,15 +152,11 @@ def status_style(df):
 
 missing = [k for k in ("QIMA_USER", "QIMA_PASS") if k not in PORTAL_ENV]
 PAGES = {}
-LABEL = {"done": "Done", "failed": "Failed", "running": "Running", "stopped": "Stopped", "created": "Queued"}
+LABEL = {"done": "Done", "failed": "Failed", "running": "Running", "stopped": "Stopped", "created": "Queued", "queued": "Queued"}
 
 
 def settle():
-    """Finish bookkeeping for runs that ended since the last refresh."""
-    for m in core.list_runs():
-        if m["status"] == "running":
-            rd = core.RUNS / m["id"]
-            core.refresh_status(rd, runtime()["proc"] if runtime()["dir"] == rd else None, TIMEOUT_MIN)
+    """The background worker finalizes runs; the UI only reads their state."""
     return core.list_runs()
 
 
@@ -174,15 +185,15 @@ def runs_frame(runs):
 
 def page_overview():
     runs = settle()
-    busy = active_run() is not None
-    st.markdown(ui.head("Overview", "Health and results across all runs since the app last started.", "Run in progress" if busy else "Ready", "run" if busy else "ok"), unsafe_allow_html=True)
+    busy = is_busy(runs)
+    st.markdown(ui.head("Overview", "Health and results across all runs since the app last started.", queue_label(runs), "run" if busy else "ok"), unsafe_allow_html=True)
     res = [r for m in runs for r in m.get("results", [])]
     good, bad = sum(r["status"] in ("DONE", "DRYRUN_OK") for r in res), sum(r["status"] == "FAILED" for r in res)
     ended = [m for m in runs if m.get("finished")]
     avg = fmt_secs(sum(run_secs(m) for m in ended) / len(ended)) if ended else "-"
     st.markdown(ui.kpis([("Runs", len(runs), "info"), ("Bookings processed", len(res), "info"),
                          ("Success rate", f"{round(100 * good / len(res))}%" if res else "-", "ok"),
-                         ("Failed bookings", bad, "bad"), ("Average run time", avg, "teal")]), unsafe_allow_html=True)
+                         ("Failed bookings", bad, "bad"), ("In queue", sum(m["status"] == "queued" for m in runs), "warn"), ("Average run time", avg, "teal")]), unsafe_allow_html=True)
     left, right = st.columns([2, 1])
     with left:
         st.markdown('<div class="sec">Runs per day</div>', unsafe_allow_html=True)
@@ -197,7 +208,7 @@ def page_overview():
         browser = any((Path.home() / ".cache" / "ms-playwright").glob("chromium*")) if (Path.home() / ".cache" / "ms-playwright").exists() else False
         st.markdown(ui.health([("Dashboard login", "Enabled", True), ("Portal credentials", "Set" if not missing else "Missing " + ", ".join(missing), not missing),
                                ("Browser engine", "Installed" if browser else "Installs on first run", browser), ("Run timeout", f"{TIMEOUT_MIN} min", True),
-                               ("Active run", runtime()["dir"].name[-9:] if busy else "None", True)]), unsafe_allow_html=True)
+                               ("Parallel runs", str(MAX_PARALLEL), True), ("Queue", queue_label(runs), True)]), unsafe_allow_html=True)
     if runs:
         st.markdown('<div class="sec">Recent runs</div>', unsafe_allow_html=True)
         st.dataframe(runs_frame(runs[:8]).drop(columns=["Note"]), use_container_width=True, hide_index=True)
@@ -205,8 +216,8 @@ def page_overview():
 
 def page_new():
     runs = settle()
-    busy = active_run() is not None
-    st.markdown(ui.head("New run", "Upload the input files, check the previews, then start.", "Run in progress" if busy else "Ready", "run" if busy else "ok"), unsafe_allow_html=True)
+    busy = is_busy(runs)
+    st.markdown(ui.head("New run", "Upload the input files, check the previews, then start or add to the queue.", queue_label(runs), "run" if busy else "ok"), unsafe_allow_html=True)
     st.markdown('<div class="sec">Input files<small>Empty slots reuse the previous run\'s files, so you only upload what changed.</small></div>', unsafe_allow_html=True)
     with st.container(border=True):
         c1, c2, c3, c4 = st.columns(4)
@@ -241,19 +252,18 @@ def page_new():
 
         o1, o2 = st.columns([3, 1])
         dry = o1.checkbox("Dry run: stop at Inspection Details and mark rows DRYRUN_OK", value=False)
-        if o2.button("Start run", type="primary", use_container_width=True, disabled=busy or bool(missing)):
+        if o2.button("Add to queue" if busy else "Start run", type="primary", use_container_width=True, disabled=bool(missing)):
             try:
                 ensure_browser()
                 rd = core.create_run(f_book.getvalue() if f_book else None, f_list.getvalue() if f_list else None,
                                      [(f.name, f.getvalue()) for f in f_pdf or []], dry,
                                      ti=f_ti.getvalue() if f_ti else None)
-                launch(rd, dry)
                 st.session_state["view"] = rd.name
                 st.switch_page(PAGES["monitor"])
             except Exception as e:
                 st.error(str(e))
         if busy:
-            st.info("A run is in progress. Wait for it to finish or stop it below.")
+            st.info("Another run is in progress. This one waits in the queue and starts automatically when it finishes.")
 
 
 
@@ -283,15 +293,16 @@ def page_history():
 # ------------------------------------------------------------ run monitor
 def render(rid):
     rd = core.RUNS / rid
-    rt = runtime()
-    proc = rt["proc"] if rt["dir"] == rd else None
-    m = core.refresh_status(rd, proc, TIMEOUT_MIN)
+    proc = runtime()["procs"].get(rid)
+    m = core.load_meta(rd)
     cur, step_shots, _, text = core.log_info(rd)
     shots = sorted(p.name for p in (rd / "logs").glob("*.png"))
     rows = core.read_bookings(rd)
     running = m["status"] == "running"
+    queued = m["status"] == "queued"
+    qpos = (core.queue_ids().index(rid) + 1) if queued and rid in core.queue_ids() else 0
 
-    st.markdown(f'<div class="sec">Run {rid}<small>{LABEL[m["status"]]}'
+    st.markdown(f'<div class="sec">Run {rid}<small>{LABEL[m["status"]]}' + (f" · position {qpos} in the queue" if queued else "")
                 + (f' · booking {cur["n"]} of {cur["total"]}, ref {cur["ref"]}' if cur and running else "") + "</small></div>", unsafe_allow_html=True)
     if m["note"]:
         st.markdown(f'<div class="note {"bad" if m["status"] == "failed" else "warn"}">{m["note"]}</div>', unsafe_allow_html=True)
@@ -305,17 +316,16 @@ def render(rid):
     st.markdown(ui.rail(core.progress(step_shots, m["status"])), unsafe_allow_html=True)
 
     b1, b2, b3, _ = st.columns([1, 1.2, 1.6, 3])
-    if running:
-        if b1.button("Stop run", key="stop_" + rid):
+    if running or queued:
+        if b1.button("Cancel" if queued else "Stop run", key="stop_" + rid):
             core.stop(rd, proc)
             st.rerun()
     else:
-        if b1.button("Retry", key="retry_" + rid, disabled=active_run() is not None or bool(missing),
-                     help="Runs again with the same files; rows already DONE are skipped."):
+        if b1.button("Retry", key="retry_" + rid, disabled=bool(missing),
+                     help="Adds a run with the same files to the queue; rows already DONE are skipped."):
             try:
                 ensure_browser()
                 new = core.create_run(None, None, [], m.get("dry_run", False), base=rd)
-                launch(new, m.get("dry_run", False))
                 st.session_state["view"] = new.name
                 st.rerun()
             except Exception as e:
@@ -360,15 +370,15 @@ def render(rid):
 
 @st.fragment(run_every=2)
 def live(rid):
-    if render(rid) != "running":
+    if render(rid) not in ("running", "queued"):
         st.rerun()
 
 
 
 def page_monitor():
     runs = settle()
-    busy = active_run() is not None
-    st.markdown(ui.head("Run monitor", "Live progress, bookings, files and screenshots for one run.", "Run in progress" if busy else "Ready", "run" if busy else "ok"), unsafe_allow_html=True)
+    busy = is_busy(runs)
+    st.markdown(ui.head("Run monitor", "Live progress, bookings, files and screenshots for one run.", queue_label(runs), "run" if busy else "ok"), unsafe_allow_html=True)
     if not runs:
         st.markdown('<div class="card">No runs yet. Start one from <b>New run</b>.</div>', unsafe_allow_html=True)
         return
@@ -377,7 +387,7 @@ def page_monitor():
     info = {m["id"]: m for m in runs}
     rid = st.selectbox("Run", ids, index=ids.index(cur), key="view_sel", format_func=lambda i: f"{LABEL[info[i]['status']]}  ·  {info[i]['created'][5:16].replace('T', ' ')}  ·  {i[-4:]}")
     st.session_state["view"] = rid
-    if core.refresh_status(core.RUNS / rid, runtime()["proc"] if runtime()["dir"] == core.RUNS / rid else None, TIMEOUT_MIN)["status"] == "running":
+    if core.load_meta(core.RUNS / rid)["status"] in ("running", "queued"):
         live(rid)
     else:
         render(rid)

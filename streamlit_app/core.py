@@ -76,8 +76,9 @@ def create_run(booking, booking_list, pdfs, dry_run: bool, base: Path = None, ti
     shutil.copytree(AUTOMATION, rd, dirs_exist_ok=True, ignore=shutil.ignore_patterns(
         "input", "logs", ".env", "__pycache__", "*.rar", ".git", "venv", ".venv"))
     (rd / "logs").mkdir(exist_ok=True)
-    save_meta(rd, {"id": rid, "created": now(), "status": "created", "dry_run": dry_run, "note": "",
-                   "rc": None, "results": [], "has_errors": False, "started_ts": None, "finished": None})
+    save_meta(rd, {"id": rid, "created": now(), "status": "queued", "dry_run": dry_run, "note": "",
+                   "rc": None, "results": [], "has_errors": False, "started_ts": None, "finished": None,
+                   "inherit_list": not booking_list})  # no new list uploaded: take the latest finished run's Status column
     return rd
 
 
@@ -110,6 +111,10 @@ def terminate(proc) -> None:
 
 def stop(rd: Path, proc) -> None:
     m = load_meta(rd)
+    if m["status"] == "queued":
+        m.update(status="stopped", finished=now(), note="Cancelled before it started")
+        save_meta(rd, m)
+        return
     m["stopping"] = True
     save_meta(rd, m)
     if proc is not None and proc.poll() is None:
@@ -185,7 +190,7 @@ def progress(names, status: str) -> list:
         at = max(reached, 0)
         if status == "done":
             s = "done"
-        elif status in ("created",):
+        elif status in ("created", "queued"):
             s = "pending"
         elif status in ("failed", "stopped"):
             s = "done" if i < at else (status if i == at else "pending")
@@ -222,3 +227,50 @@ def make_zip(rd: Path) -> bytes:
         if (rd / "run.log").exists():
             z.write(rd / "run.log", "run.log")
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------- run queue
+def _all_meta() -> list:
+    return [load_meta(p) for p in sorted(RUNS.iterdir()) if (p / "run.json").exists()]  # oldest first
+
+
+def queue_ids() -> list:
+    return [m["id"] for m in _all_meta() if m["status"] == "queued"]
+
+
+def _start_queued(rd: Path, m: dict, env: dict):
+    if m.get("inherit_list"):  # use the Status column the previous finished run wrote, so DONE rows are never booked twice
+        for p in sorted(RUNS.iterdir(), reverse=True):
+            if p.name >= rd.name or not (p / "run.json").exists():
+                continue
+            if load_meta(p)["status"] in ("queued", "running"):
+                continue
+            src = p / "input" / "booking_list.xlsx"
+            if src.exists():
+                shutil.copy2(src, rd / "input" / "booking_list.xlsx")
+            break
+    return start(rd, env, m.get("dry_run", False))
+
+
+def tick(rt: dict, cfg: dict) -> None:
+    """One pass of the worker: finish ended runs, then start queued runs while slots are free."""
+    with rt["lock"]:
+        procs = rt["procs"]
+        for rid, proc in list(procs.items()):
+            if refresh_status(RUNS / rid, proc, cfg["timeout"])["status"] != "running":
+                procs.pop(rid, None)
+        metas = _all_meta()
+        for m in metas:  # marked running but no process: the app restarted
+            if m["status"] == "running" and m["id"] not in procs:
+                refresh_status(RUNS / m["id"], None, cfg["timeout"])
+        for m in metas:
+            if len(procs) >= cfg.get("max_parallel", 1):
+                break
+            if m["status"] != "queued":
+                continue
+            rd = RUNS / m["id"]
+            try:
+                procs[m["id"]] = _start_queued(rd, m, cfg["env"])
+            except Exception as e:
+                m.update(status="failed", finished=now(), note=f"Could not start: {e}")
+                save_meta(rd, m)

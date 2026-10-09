@@ -1,7 +1,7 @@
 # Streamlit edition
 
 Files: `streamlit_app/app.py` (main file), `streamlit_app/core.py`, `streamlit_app/requirements.txt`,
-`streamlit_app/packages.txt`, `.streamlit/secrets.toml.example`. It reuses `automation/main.py` unchanged.
+`packages.txt` (must stay at the repository root), `streamlit_app/ui.py`, `.streamlit/config.toml` (theme), `.streamlit/secrets.toml.example`. It reuses `automation/main.py` unchanged.
 
 Deploy on Streamlit Community Cloud:
 1. share.streamlit.io, sign in with GitHub, Create app.
@@ -15,3 +15,7 @@ Run it locally instead:
     copy .streamlit\secrets.toml.example .streamlit\secrets.toml   (then edit it)
     streamlit run streamlit_app/app.py
 Limits: storage is wiped on restart or sleep, one run at a time, no scheduler or alerts.
+
+Run queue: runs you add while another is running wait and start automatically, oldest first.
+MAX_PARALLEL (Secrets, default 1) allows several at once. Keep 1 unless each run uses a different booking_list.xlsx,
+because two runs sharing one list could book the same rows twice, and the free server has little memory.
