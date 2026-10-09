@@ -2,6 +2,7 @@
 import hmac
 import io
 import re
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -134,83 +135,141 @@ def status_style(df):
     return (sty.map if hasattr(sty, "map") else sty.applymap)(fn, subset=["Status"])
 
 
-# ------------------------------------------------------------------ header
-for _m in core.list_runs():  # settle finished runs first so the list and header are current
-    if _m["status"] == "running":
-        _rd = core.RUNS / _m["id"]
-        core.refresh_status(_rd, runtime()["proc"] if runtime()["dir"] == _rd else None, TIMEOUT_MIN)
-runs = core.list_runs()
-busy = active_run() is not None
-st.markdown(ui.hero("QIMA Booking Automation", "Upload your files, start the run and watch every step live.",
-                    "Run in progress" if busy else "Ready", "run" if busy else "ok"), unsafe_allow_html=True)
 missing = [k for k in ("QIMA_USER", "QIMA_PASS") if k not in PORTAL_ENV]
-if missing:
-    st.markdown(f'<div class="note warn">Add {" and ".join(missing)} to this app\'s Secrets before starting a run.</div>', unsafe_allow_html=True)
-
-# ------------------------------------------------------------ new run card
-st.markdown('<div class="sec">New run<small>Empty slots reuse the previous run\'s files, so you only upload what changed.</small></div>', unsafe_allow_html=True)
-with st.container(border=True):
-    c1, c2, c3, c4 = st.columns(4)
-    f_list = c1.file_uploader("1  booking_list.xlsx", type=["xlsx"], help="The list of bookings and their Status.")
-    f_book = c2.file_uploader("2  booking.xlsx", type=["xlsx"], help="Uploaded on the General Information step.")
-    f_pdf = c3.file_uploader("3  PO PDFs", type=["pdf"], accept_multiple_files=True)
-    f_ti = c4.file_uploader("4  Technical sheet (TI) Excel", type=["xlsx"], help="Attached in the PO box after the last PO PDF.")
-
-    previews = [(n, f) for n, f in (("booking_list.xlsx", f_list), ("booking.xlsx", f_book), ("Technical sheet (TI)", f_ti)) if f]
-    if previews:
-        st.markdown("**Uploaded Excel files**")
-        for tab, (label, f) in zip(st.tabs([f"{n}  ({f.size // 1024 or 1} KB)" for n, f in previews]), previews):
-            with tab:
-                show_excel(f.getvalue())
-    if f_ti and f_pdf:
-        pos, names = po_numbers(f_ti.getvalue()), " ".join(re.sub(r"\D", "", p.name) for p in f_pdf)
-        if pos:
-            pairs = [(p, p in names or p.lstrip("0") in names) for p in dict.fromkeys(pos)]
-            have = sum(ok for _, ok in pairs)
-            st.markdown(f"**PO coverage**: {have} of {len(pairs)} POs in the TI sheet have a PDF")
-            st.markdown(ui.po_chips(pairs), unsafe_allow_html=True)
-    elif f_pdf:
-        st.caption(f"{len(f_pdf)} PO PDF(s) selected: " + ", ".join(p.name for p in f_pdf[:8]) + (" ..." if len(f_pdf) > 8 else ""))
-
-    o1, o2 = st.columns([3, 1])
-    dry = o1.checkbox("Dry run: stop at Inspection Details and mark rows DRYRUN_OK", value=False)
-    if o2.button("Start run", type="primary", use_container_width=True, disabled=busy or bool(missing)):
-        try:
-            ensure_browser()
-            rd = core.create_run(f_book.getvalue() if f_book else None, f_list.getvalue() if f_list else None,
-                                 [(f.name, f.getvalue()) for f in f_pdf or []], dry,
-                                 ti=f_ti.getvalue() if f_ti else None)
-            launch(rd, dry)
-            st.session_state["view"] = rd.name
-            st.rerun()
-        except Exception as e:
-            st.error(str(e))
-    if busy:
-        st.info("A run is in progress. Wait for it to finish or stop it below.")
-
-# ---------------------------------------------------------------- sidebar
+PAGES = {}
 LABEL = {"done": "Done", "failed": "Failed", "running": "Running", "stopped": "Stopped", "created": "Queued"}
-DOT = {"done": "🟢", "failed": "🔴", "running": "🟠", "stopped": "⚪", "created": "⚪"}
-with st.sidebar:
-    st.markdown('<div class="brand"><div class="logo">Q</div><b>QIMA Automation</b></div>', unsafe_allow_html=True)
-    st.caption("Run history")
-    if runs:
-        ids = [m["id"] for m in runs]
-        if st.session_state.get("view") not in ids:
-            st.session_state["view"] = ids[0]
-        info = {m["id"]: m for m in runs}
-        st.radio("Run", ids, key="view", label_visibility="collapsed", format_func=lambda i: (
-            f"{DOT[info[i]['status']]} {LABEL[info[i]['status']]}"
-            f"{' with errors' if info[i]['has_errors'] and info[i]['status'] == 'done' else ''}  ·  {info[i]['created'][5:16].replace('T', ' ')}"))
-    else:
-        st.write("No runs yet.")
-    st.divider()
-    if st.button("Sign out", use_container_width=True):
-        st.session_state.clear()
-        st.rerun()
 
-if not runs:
-    st.stop()
+
+def settle():
+    """Finish bookkeeping for runs that ended since the last refresh."""
+    for m in core.list_runs():
+        if m["status"] == "running":
+            rd = core.RUNS / m["id"]
+            core.refresh_status(rd, runtime()["proc"] if runtime()["dir"] == rd else None, TIMEOUT_MIN)
+    return core.list_runs()
+
+
+def fmt_secs(s):
+    s = int(s)
+    return f"{s // 3600}h {s % 3600 // 60:02d}m" if s >= 3600 else f"{s // 60}m {s % 60:02d}s"
+
+
+def run_secs(m):
+    if not m.get("started_ts"):
+        return 0
+    end = datetime.fromisoformat(m["finished"]).timestamp() if m.get("finished") else time.time()
+    return max(0, end - m["started_ts"])
+
+
+def runs_frame(runs):
+    rows = []
+    for m in runs:
+        res = m.get("results", [])
+        rows.append({"Run": m["id"], "Started": m["created"].replace("T", " "), "Status": LABEL[m["status"]] + (" (errors)" if m.get("has_errors") and m["status"] == "done" else ""),
+                     "Mode": "Dry run" if m.get("dry_run") else "Live", "Bookings": len(res),
+                     "Completed": sum(r["status"] in ("DONE", "DRYRUN_OK") for r in res), "Failed": sum(r["status"] == "FAILED" for r in res),
+                     "Duration": fmt_secs(run_secs(m)) if m.get("started_ts") else "", "Note": m.get("note", "")})
+    return pd.DataFrame(rows)
+
+
+def page_overview():
+    runs = settle()
+    busy = active_run() is not None
+    st.markdown(ui.head("Overview", "Health and results across all runs since the app last started.", "Run in progress" if busy else "Ready", "run" if busy else "ok"), unsafe_allow_html=True)
+    res = [r for m in runs for r in m.get("results", [])]
+    good, bad = sum(r["status"] in ("DONE", "DRYRUN_OK") for r in res), sum(r["status"] == "FAILED" for r in res)
+    ended = [m for m in runs if m.get("finished")]
+    avg = fmt_secs(sum(run_secs(m) for m in ended) / len(ended)) if ended else "-"
+    st.markdown(ui.kpis([("Runs", len(runs), "info"), ("Bookings processed", len(res), "info"),
+                         ("Success rate", f"{round(100 * good / len(res))}%" if res else "-", "ok"),
+                         ("Failed bookings", bad, "bad"), ("Average run time", avg, "warn")]), unsafe_allow_html=True)
+    left, right = st.columns([2, 1])
+    with left:
+        st.markdown('<div class="sec">Runs per day</div>', unsafe_allow_html=True)
+        if runs:
+            df = pd.DataFrame({"day": [m["created"][:10] for m in runs], "status": [LABEL[m["status"]] for m in runs]})
+            piv = df.pivot_table(index="day", columns="status", aggfunc="size", fill_value=0).reindex(columns=["Done", "Failed", "Stopped"], fill_value=0)
+            st.bar_chart(piv, color=["#10b981", "#ef4444", "#94a3b8"], height=240)
+        else:
+            st.markdown('<div class="card">No runs yet. Start one from <b>New run</b>.</div>', unsafe_allow_html=True)
+    with right:
+        st.markdown('<div class="sec">System</div>', unsafe_allow_html=True)
+        browser = any((Path.home() / ".cache" / "ms-playwright").glob("chromium*")) if (Path.home() / ".cache" / "ms-playwright").exists() else False
+        st.markdown(ui.health([("Dashboard login", "Enabled", True), ("Portal credentials", "Set" if not missing else "Missing " + ", ".join(missing), not missing),
+                               ("Browser engine", "Installed" if browser else "Installs on first run", browser), ("Run timeout", f"{TIMEOUT_MIN} min", True),
+                               ("Active run", runtime()["dir"].name[-9:] if busy else "None", True)]), unsafe_allow_html=True)
+    if runs:
+        st.markdown('<div class="sec">Recent runs</div>', unsafe_allow_html=True)
+        st.dataframe(runs_frame(runs[:8]).drop(columns=["Note"]), use_container_width=True, hide_index=True)
+
+
+def page_new():
+    runs = settle()
+    busy = active_run() is not None
+    st.markdown(ui.head("New run", "Upload the input files, check the previews, then start.", "Run in progress" if busy else "Ready", "run" if busy else "ok"), unsafe_allow_html=True)
+    st.markdown('<div class="sec">Input files<small>Empty slots reuse the previous run\'s files, so you only upload what changed.</small></div>', unsafe_allow_html=True)
+    with st.container(border=True):
+        c1, c2, c3, c4 = st.columns(4)
+        f_list = c1.file_uploader("1  booking_list.xlsx", type=["xlsx"], help="The list of bookings and their Status.")
+        f_book = c2.file_uploader("2  booking.xlsx", type=["xlsx"], help="Uploaded on the General Information step.")
+        f_pdf = c3.file_uploader("3  PO PDFs", type=["pdf"], accept_multiple_files=True)
+        f_ti = c4.file_uploader("4  Technical sheet (TI) Excel", type=["xlsx"], help="Attached in the PO box after the last PO PDF.")
+
+        previews = [(n, f) for n, f in (("booking_list.xlsx", f_list), ("booking.xlsx", f_book), ("Technical sheet (TI)", f_ti)) if f]
+        if previews:
+            st.markdown("**Uploaded Excel files**")
+            for tab, (label, f) in zip(st.tabs([f"{n}  ({f.size // 1024 or 1} KB)" for n, f in previews]), previews):
+                with tab:
+                    show_excel(f.getvalue())
+        if f_ti and f_pdf:
+            pos, names = po_numbers(f_ti.getvalue()), " ".join(re.sub(r"\D", "", p.name) for p in f_pdf)
+            if pos:
+                pairs = [(p, p in names or p.lstrip("0") in names) for p in dict.fromkeys(pos)]
+                have = sum(ok for _, ok in pairs)
+                st.markdown(f"**PO coverage**: {have} of {len(pairs)} POs in the TI sheet have a PDF")
+                st.markdown(ui.po_chips(pairs), unsafe_allow_html=True)
+        elif f_pdf:
+            st.caption(f"{len(f_pdf)} PO PDF(s) selected: " + ", ".join(p.name for p in f_pdf[:8]) + (" ..." if len(f_pdf) > 8 else ""))
+
+        o1, o2 = st.columns([3, 1])
+        dry = o1.checkbox("Dry run: stop at Inspection Details and mark rows DRYRUN_OK", value=False)
+        if o2.button("Start run", type="primary", use_container_width=True, disabled=busy or bool(missing)):
+            try:
+                ensure_browser()
+                rd = core.create_run(f_book.getvalue() if f_book else None, f_list.getvalue() if f_list else None,
+                                     [(f.name, f.getvalue()) for f in f_pdf or []], dry,
+                                     ti=f_ti.getvalue() if f_ti else None)
+                launch(rd, dry)
+                st.session_state["view"] = rd.name
+                st.switch_page(PAGES["monitor"])
+            except Exception as e:
+                st.error(str(e))
+        if busy:
+            st.info("A run is in progress. Wait for it to finish or stop it below.")
+
+
+
+def page_history():
+    runs = settle()
+    st.markdown(ui.head("History", "Every run kept on this server. Storage resets when the app restarts.", f"{len(runs)} runs", "ok"), unsafe_allow_html=True)
+    if not runs:
+        st.markdown('<div class="card">No runs yet.</div>', unsafe_allow_html=True)
+        return
+    df = runs_frame(runs)
+    c1, c2 = st.columns([2, 3])
+    pick = c1.multiselect("Status", sorted(df["Status"].unique()), default=sorted(df["Status"].unique()))
+    q = c2.text_input("Search run or note")
+    df = df[df["Status"].isin(pick)]
+    if q:
+        df = df[df.apply(lambda r: q.lower() in " ".join(map(str, r.values)).lower(), axis=1)]
+    ev = st.dataframe(df, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
+    if ev.selection.rows:
+        rid = df.iloc[ev.selection.rows[0]]["Run"]
+        if st.button(f"Open run {rid}", type="primary"):
+            st.session_state["view"] = rid
+            st.switch_page(PAGES["monitor"])
+    else:
+        st.caption("Select a row to open that run.")
 
 
 # ------------------------------------------------------------ run monitor
@@ -297,9 +356,33 @@ def live(rid):
         st.rerun()
 
 
-rid = st.session_state["view"]
-status = core.refresh_status(core.RUNS / rid, runtime()["proc"] if runtime()["dir"] == core.RUNS / rid else None, TIMEOUT_MIN)["status"]
-if status == "running":
-    live(rid)
-else:
-    render(rid)
+
+def page_monitor():
+    runs = settle()
+    busy = active_run() is not None
+    st.markdown(ui.head("Run monitor", "Live progress, bookings, files and screenshots for one run.", "Run in progress" if busy else "Ready", "run" if busy else "ok"), unsafe_allow_html=True)
+    if not runs:
+        st.markdown('<div class="card">No runs yet. Start one from <b>New run</b>.</div>', unsafe_allow_html=True)
+        return
+    ids = [m["id"] for m in runs]
+    cur = st.session_state.get("view") if st.session_state.get("view") in ids else ids[0]
+    info = {m["id"]: m for m in runs}
+    rid = st.selectbox("Run", ids, index=ids.index(cur), key="view_sel", format_func=lambda i: f"{LABEL[info[i]['status']]}  ·  {info[i]['created'][5:16].replace('T', ' ')}  ·  {i[-4:]}")
+    st.session_state["view"] = rid
+    if core.refresh_status(core.RUNS / rid, runtime()["proc"] if runtime()["dir"] == core.RUNS / rid else None, TIMEOUT_MIN)["status"] == "running":
+        live(rid)
+    else:
+        render(rid)
+
+
+PAGES["overview"] = st.Page(page_overview, title="Overview", default=True)
+PAGES["new"] = st.Page(page_new, title="New run")
+PAGES["monitor"] = st.Page(page_monitor, title="Run monitor")
+PAGES["history"] = st.Page(page_history, title="History")
+nav = st.navigation(list(PAGES.values()))
+with st.sidebar:
+    st.markdown('<div class="brand"><div class="logo">Q</div><b>QIMA Automation</b></div>', unsafe_allow_html=True)
+    if st.button("Sign out", use_container_width=True):
+        st.session_state.clear()
+        st.rerun()
+nav.run()

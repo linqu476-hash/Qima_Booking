@@ -46,6 +46,10 @@ html, body, [class*="css"], .stMarkdown, button, input { font-family: 'Inter', s
 .stButton > button[kind="primary"] { background:linear-gradient(135deg,#14b8a6,#0f766e); border:0; font-weight:600; border-radius:10px; }
 .stButton > button, .stDownloadButton > button { border-radius:10px; }
 [data-testid="stFileUploader"] section { border-radius:12px; border:1.5px dashed #9fb3c0; background:#f8fafc; }
+.hero.compact { padding:16px 24px; margin-bottom:14px; } .hero.compact h1 { font-size:1.35rem; } .hero.compact p { font-size:.9rem; }
+.hrow { display:flex; justify-content:space-between; align-items:center; padding:9px 0; border-bottom:1px solid #eef2f6; font-size:.9rem; } .hrow:last-child { border:0; }
+.hrow b { padding:2px 10px; border-radius:99px; font-size:.78rem; } .hrow b.ok { background:#d1fae5; color:#065f46; } .hrow b.no { background:#fee2e2; color:#991b1b; }
+[data-testid="stSidebarNav"] a { border-radius:8px; } [data-testid="stSidebarNav"] a[aria-current="page"] { background:#14303f; }
 .stTabs [data-baseweb="tab"] { font-weight:600; }
 </style>
 """
@@ -71,3 +75,12 @@ def rail(steps):
 
 def po_chips(pairs):
     return "".join(f'<span class="po {"ok" if ok else "no"}">{po}</span>' for po, ok in pairs)
+
+
+def head(title, subtitle, chip_text, chip_kind):
+    return hero(title, subtitle, chip_text, chip_kind).replace('class="hero"', 'class="hero compact"', 1)
+
+
+def health(rows):
+    return '<div class="card">' + "".join(
+        f'<div class="hrow"><span>{label}</span><b class="{"ok" if ok else "no"}">{value}</b></div>' for label, value, ok in rows) + "</div>"
