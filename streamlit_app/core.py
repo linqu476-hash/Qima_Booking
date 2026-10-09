@@ -48,7 +48,7 @@ def env_file_text(env: dict) -> str:
     return "".join("{}='{}'\n".format(k, str(v).replace("\\", "\\\\").replace("'", "\\'")) for k, v in env.items())
 
 
-def create_run(booking, booking_list, pdfs, dry_run: bool, base: Path = None) -> Path:
+def create_run(booking, booking_list, pdfs, dry_run: bool, base: Path = None, ti=None) -> Path:
     """booking/booking_list are bytes or None; pdfs is a list of (name, bytes).
     Empty slots reuse the previous run's files, including the Status column the script wrote,
     so rows already DONE are skipped."""
@@ -63,6 +63,8 @@ def create_run(booking, booking_list, pdfs, dry_run: bool, base: Path = None) ->
         (rd / "input" / "booking.xlsx").write_bytes(booking)
     if booking_list:
         (rd / "input" / "booking_list.xlsx").write_bytes(booking_list)
+    if ti:
+        (rd / "input" / "technical_info.xlsx").write_bytes(ti)
     if pdfs:
         shutil.rmtree(rd / "input" / "po_pdf", ignore_errors=True)
         (rd / "input" / "po_pdf").mkdir()
@@ -132,7 +134,9 @@ def log_info(rd: Path):
 
 def finalize(rd: Path, m: dict, rc, timed_out: bool = False, timeout_min: int = 0) -> dict:
     _, _, results, text = log_info(rd)
-    last = next((ln.strip() for ln in reversed(text.splitlines()) if ln.strip()), "")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    # prefer the final "SomeError: message" line over trailing log noise
+    last = next((ln for ln in reversed(lines) if re.match(r"^[\w.]*(Error|Exception)\b", ln)), lines[-1] if lines else "")
     n_failed = sum(r["status"] == "FAILED" for r in results)
     m.update(rc=rc, finished=now(), results=results,
              has_errors=bool(n_failed) or any(FAIL_SHOT_RE.search(p.name) for p in (rd / "logs").glob("*.png")))
