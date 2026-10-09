@@ -143,8 +143,8 @@ def po_numbers(data: bytes) -> list:
 
 
 def status_style(df):
-    colors = {"DONE": "#e5f5ee;color:#075c3d", "DRYRUN_OK": "#fdf1dc;color:#7a4800",
-              "FAILED": "#fbe9e7;color:#8f2118", "PENDING": "#e9eeed;color:#566772"}
+    colors = {"DONE": "#d8f6e7;color:#0a6b3f", "DRYRUN_OK": "#fff1d6;color:#7a4a00",
+              "FAILED": "#ffe0e0;color:#a52424", "PENDING": "#e6e8f8;color:#5f6488"}
     fn = lambda v: f"background-color:{colors[v]};font-weight:600" if v in colors else ""  # noqa: E731
     sty = df.style
     return (sty.map if hasattr(sty, "map") else sty.applymap)(fn, subset=["Status"])
@@ -191,16 +191,33 @@ def page_overview():
     good, bad = sum(r["status"] in ("DONE", "DRYRUN_OK") for r in res), sum(r["status"] == "FAILED" for r in res)
     ended = [m for m in runs if m.get("finished")]
     avg = fmt_secs(sum(run_secs(m) for m in ended) / len(ended)) if ended else "-"
-    st.markdown(ui.kpis([("Runs", len(runs), "info"), ("Bookings processed", len(res), "info"),
+    st.markdown(ui.kpis([("Runs", len(runs), "info"), ("Bookings processed", len(res), "sky"),
                          ("Success rate", f"{round(100 * good / len(res))}%" if res else "-", "ok"),
-                         ("Failed bookings", bad, "bad"), ("In queue", sum(m["status"] == "queued" for m in runs), "warn"), ("Average run time", avg, "teal")]), unsafe_allow_html=True)
+                         ("Failed bookings", bad, "bad"), ("In queue", sum(m["status"] == "queued" for m in runs), "warn"), ("Average run time", avg, "pink")]), unsafe_allow_html=True)
+    for m in [m for m in runs if m["status"] in ("running", "queued")][:3]:  # stop control without opening the monitor
+        c1, c2 = st.columns([4, 1])
+        c1.markdown(f'<div class="note warn">Run {m["id"]} is {LABEL[m["status"]].lower()}.</div>', unsafe_allow_html=True)
+        if c2.button("Cancel" if m["status"] == "queued" else "Stop run", key="stop_ov_" + m["id"], type="primary", use_container_width=True):
+            core.stop(core.RUNS / m["id"], runtime()["procs"].get(m["id"]))
+            st.rerun()
+    if res:
+        pct = round(100 * good / len(res))
+        last = next((m for m in runs if m["status"] in ("done", "failed")), None)
+        tips = [("ok" if pct >= 90 else "warn" if pct >= 60 else "bad", f"{good} of {len(res)} bookings completed, {bad} failed.")]
+        if last:
+            tips.append(("bad" if last["status"] == "failed" else "ok", f"Latest finished run: {LABEL[last['status']].lower()}" + (f". {last['note']}" if last.get("note") else ".")))
+        if bad:
+            tips.append(("warn", "Open Retry on a failed run. Rows already DONE are skipped, so nothing is booked twice."))
+        if ended:
+            tips.append(("info", f"Runs take {avg} on average. Plan large batches around that."))
+        st.markdown(ui.insights(pct, tips), unsafe_allow_html=True)
     left, right = st.columns([2, 1])
     with left:
         st.markdown('<div class="sec">Runs per day</div>', unsafe_allow_html=True)
         if runs:
             df = pd.DataFrame({"day": [m["created"][:10] for m in runs], "status": [LABEL[m["status"]] for m in runs]})
             piv = df.pivot_table(index="day", columns="status", aggfunc="size", fill_value=0).reindex(columns=["Done", "Failed", "Stopped"], fill_value=0)
-            st.bar_chart(piv, color=["#0b8a5b", "#c8372d", "#8fa0aa"], height=240)
+            st.bar_chart(piv, color=["#1fb26b", "#ff5d5d", "#a9a2f0"], height=240)
         else:
             st.markdown(ui.guide(), unsafe_allow_html=True)
     with right:
@@ -322,9 +339,9 @@ def render(rid):
                          ("Elapsed", f"{secs // 60}m {secs % 60:02d}s", "teal")]), unsafe_allow_html=True)
     st.markdown(ui.rail(core.progress(step_shots, m["status"])), unsafe_allow_html=True)
 
-    b1, b2, b3, _ = st.columns([1, 1.2, 1.6, 3])
+    b1, b2, b3, _ = st.columns([1.3, 1.2, 1.6, 2.5])
     if running or queued:
-        if b1.button("Cancel" if queued else "Stop run", key="stop_" + rid):
+        if b1.button("Cancel" if queued else "Stop run", key="stop_" + rid, type="primary", use_container_width=True):
             core.stop(rd, proc)
             st.rerun()
     else:
