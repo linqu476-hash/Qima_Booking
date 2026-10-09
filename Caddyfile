@@ -1,0 +1,4 @@
+# Automatic HTTPS. DOMAIN comes from .env (a domain whose DNS points at this server).
+{$DOMAIN} {
+	reverse_proxy dashboard:8000
+}

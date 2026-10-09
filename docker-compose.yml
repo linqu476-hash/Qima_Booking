@@ -3,12 +3,27 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${BIND:-0.0.0.0}:8000:8000"   # set BIND=127.0.0.1 when using HTTPS below
     env_file: .env
     environment:
       - TZ=${TZ:-UTC}
     volumes:
       - dashboard-data:/data
     shm_size: "1gb"   # Chromium needs this
+
+  # Optional HTTPS: docker compose --profile https up -d --build
+  caddy:
+    image: caddy:2
+    profiles: ["https"]
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+
 volumes:
   dashboard-data:
+  caddy-data:

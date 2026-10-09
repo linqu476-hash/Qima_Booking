@@ -41,9 +41,15 @@ STEPS = [
     ("inspection", "Inspection", ["inspection_details"]),
 ]
 
+FAIL_SHOT_RE = re.compile(r"error|fail|missing|not_found|blocked|no_po", re.I)
+BOOKING_RE = re.compile(r"===== booking (\d+)/(\d+)\s+ref=(\S+)")
+SHOT_RE = re.compile(r"screenshot -> (\S+\.png)")
+RESULT_RE = re.compile(r"INFO (\S+)\s+->\s+(DONE|FAILED|DRYRUN_OK)\s*$", re.M)
+
 DEFAULTS = {
     "env": {},
     "headless": True,
+    "dry_run": False,
     "timeout_min": 60,
     "alert_on": "problems",  # problems | always | never
     "slack_webhook": "",
@@ -137,18 +143,21 @@ def all_runs() -> List[dict]:
 
 def create_run(booking: Optional[UploadFile], booking_list: Optional[UploadFile],
                pdfs: List[UploadFile], base: Optional[str], source: str) -> dict:
+    pdfs = [p for p in pdfs if p.filename]
+    runs = all_runs()
+    if not (booking and booking.filename and booking_list and booking_list.filename and pdfs):
+        # some files come from a previous run, which must be finished so its Status column is final
+        if any(r["status"] in ("queued", "running") for r in runs):
+            raise HTTPException(409, "A run is still in progress. Wait for it to finish, or upload all three files.")
     rid = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:4]
     d = RUNS / rid
     (d / "input" / "po_pdf").mkdir(parents=True)
     (d / "logs").mkdir()
-    # Start from the original inputs of a previous run so you only upload what changed.
-    prev = None
-    if base and RUN_ID_RE.match(base) and (RUNS / base).is_dir():
-        prev = RUNS / base
-    elif all_runs():
-        prev = RUNS / all_runs()[0]["id"]
-    if prev and (prev / "input_original").is_dir():
-        shutil.copytree(prev / "input_original", d / "input", dirs_exist_ok=True)
+    # Reuse the previous run's input files, including its booking_list.xlsx with the Status column
+    # the script wrote, so rows already marked DONE are skipped and are never booked twice.
+    prev = RUNS / base if base and RUN_ID_RE.match(base) and (RUNS / base).is_dir() else (RUNS / runs[0]["id"] if runs else None)
+    if prev and (prev / "input").is_dir():
+        shutil.copytree(prev / "input", d / "input", dirs_exist_ok=True)
 
     def put(up: UploadFile, dest: Path):
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -159,7 +168,6 @@ def create_run(booking: Optional[UploadFile], booking_list: Optional[UploadFile]
         put(booking, d / "input" / "booking.xlsx")
     if booking_list and booking_list.filename:
         put(booking_list, d / "input" / "booking_list.xlsx")
-    pdfs = [p for p in pdfs if p.filename]
     if pdfs:
         shutil.rmtree(d / "input" / "po_pdf", ignore_errors=True)
         for p in pdfs:
@@ -167,17 +175,49 @@ def create_run(booking: Optional[UploadFile], booking_list: Optional[UploadFile]
     if not any((d / "input").rglob("*.*")):
         shutil.rmtree(d)
         raise HTTPException(400, "Upload at least one input file.")
-    shutil.copytree(d / "input", d / "input_original")
     m = {"id": rid, "status": "queued", "created": now(), "started": None, "finished": None,
-         "rc": None, "source": source, "has_errors": False, "note": "", "baseline": [],
+         "rc": None, "source": source, "has_errors": False, "note": "", "baseline": [], "results": [],
          "inputs": sorted(str(p.relative_to(d / "input")) for p in (d / "input").rglob("*") if p.is_file())}
     save_run(m)
     QUEUE.put_nowait(rid)
     return m
 
 
-def progress(d: Path, status: str) -> List[dict]:
-    names = [p.name for p in (d / "logs").glob("*.png")] if (d / "logs").is_dir() else []
+def log_info(d: Path):
+    """Parse the script's own log lines: current booking, screenshots of that booking, final results."""
+    f = d / "run.log"
+    text = f.read_text("utf-8", "replace") if f.exists() else ""
+    cur, shots = None, []
+    for line in text.splitlines():
+        mm = BOOKING_RE.search(line)
+        if mm:
+            cur = {"n": int(mm[1]), "total": int(mm[2]), "ref": mm[3]}
+            shots = [x for x in shots if any(k in x for k in STEPS[0][2])]  # keep the login shots
+            continue
+        mm = SHOT_RE.search(line)
+        if mm:
+            shots.append(mm[1])
+    return cur, shots, [{"ref": a, "status": b} for a, b in RESULT_RE.findall(text)], text
+
+
+def read_bookings(d: Path) -> List[dict]:
+    """Rows of booking_list.xlsx (the script writes Status and Message back into it)."""
+    try:
+        from openpyxl import load_workbook
+        rows = list(load_workbook(d / "input" / "booking_list.xlsx", read_only=True, data_only=True)["Bookings"].iter_rows(values_only=True))
+        head = [str(c or "").strip().lower() for c in rows[0]]
+        def g(r, k):
+            v = r[head.index(k)] if k in head else ""
+            v = int(v) if isinstance(v, float) and v.is_integer() else v
+            return "" if v is None else str(v).strip()
+        return [{"ref": g(r, "booking ref no."), "supplier": g(r, "supplier"), "status": g(r, "status").upper(),
+                 "message": g(r, "message")} for r in rows[1:] if g(r, "booking ref no.")]
+    except Exception:
+        return []
+
+
+def progress(names: List[str], status: str) -> List[dict]:
+    names = [n for n in names if not FAIL_SHOT_RE.search(n)]
     reached = -1
     for i, (_, _, keys) in enumerate(STEPS):
         if any(k in n for n in names for k in keys):
@@ -213,6 +253,11 @@ def run_files(d: Path, m: dict) -> List[dict]:
 
 
 async def terminate(proc) -> None:
+    if os.name == "nt":  # Windows: kill the script and the browser processes it started
+        k = await asyncio.create_subprocess_exec("taskkill", "/T", "/F", "/PID", str(proc.pid),
+                                                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        await k.wait()
+        return
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         await asyncio.wait_for(proc.wait(), 8)
@@ -249,14 +294,16 @@ async def execute(rid: str) -> None:
     save_run(m)
 
     env = {**os.environ, **{k: str(v) for k, v in s["env"].items()},
-           "HEADLESS": "true" if s["headless"] else "false", "PYTHONUNBUFFERED": "1"}
+           "HEADLESS": "true" if s["headless"] else "false", "DRY_RUN": "true" if s["dry_run"] else "false",
+           "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
     cmd = [sys.executable, "-u", "main.py"]
-    if shutil.which("xvfb-run") and shutil.which("xauth"):  # virtual display, so scripts that open a visible browser still work
+    # Only needed for "Visible" mode: a virtual display so a headed browser works on a server.
+    if not s["headless"] and shutil.which("xvfb-run") and shutil.which("xauth"):
         cmd = ["xvfb-run", "-a"] + cmd
     timed_out = False
     with open(d / "run.log", "ab") as log:
         proc = await asyncio.create_subprocess_exec(*cmd, cwd=str(d), env=env, stdout=log,
-                                                    stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+                                                    stderr=asyncio.subprocess.STDOUT, start_new_session=(os.name != "nt"))
         PROCS[rid] = proc
         try:
             rc = await asyncio.wait_for(proc.wait(), int(s["timeout_min"]) * 60)
@@ -267,16 +314,26 @@ async def execute(rid: str) -> None:
         finally:
             PROCS.pop(rid, None)
     m = load_run(rid)
-    m.update(rc=rc, finished=now(), has_errors=any((d / "logs").glob("*error*.png")))
+    _, _, results, text = log_info(d)
+    last = next((ln.strip() for ln in reversed(text.splitlines()) if ln.strip()), "")
+    n_failed = sum(r["status"] == "FAILED" for r in results)
+    m.update(rc=rc, finished=now(), results=results,
+             has_errors=bool(n_failed) or any(FAIL_SHOT_RE.search(p.name) for p in (d / "logs").glob("*.png")))
     if rid in STOPPING:
         STOPPING.discard(rid)
         m.update(status="stopped", note="Stopped from the dashboard")
     elif timed_out:
         m.update(status="failed", note=f"Timed out after {s['timeout_min']} minutes")
+    elif rc != 0 and "Nothing to do" in last:  # every row already DONE: not a failure
+        m.update(status="done", has_errors=False, note=last[:200])
     elif rc != 0:
-        m.update(status="failed", note=f"Script exited with code {rc}")
+        m.update(status="failed", note=(last or f"Script exited with code {rc}")[:200])
+    elif results and n_failed == len(results):
+        m.update(status="failed", note="Every booking failed. See the Bookings table and screenshots.")
+    elif n_failed:
+        m.update(status="done", note=f"{n_failed} of {len(results)} bookings failed. Retry runs only the failed rows.")
     else:
-        m.update(status="done", note="Finished with error screenshots, check the gallery" if m["has_errors"] else "")
+        m.update(status="done", note="Finished, but error screenshots were saved. Check the gallery." if m["has_errors"] else "")
     save_run(m)
     await notify(m)
 
@@ -346,7 +403,8 @@ async def scheduler() -> None:
             sc = s["schedule"]
             t = datetime.now()
             key = t.strftime("%Y-%m-%d ") + sc["time"]
-            if sc["enabled"] and t.strftime("%H:%M") == sc["time"] and t.weekday() in sc["days"] and sc["last_fired"] != key:
+            busy = any(m["status"] in ("queued", "running") for m in all_runs()[:5])
+            if sc["enabled"] and not busy and t.strftime("%H:%M") == sc["time"] and t.weekday() in sc["days"] and sc["last_fired"] != key:
                 s["schedule"]["last_fired"] = key
                 save_settings(s)
                 create_run(None, None, [], None, "schedule")
@@ -414,9 +472,10 @@ def run_detail(rid: str, offset: int = 0):
             chunk = f.read(200_000)
             new_offset = offset + len(chunk)
             text = chunk.decode("utf-8", "replace")
-    shots = [{"name": p.name, "error": "error" in p.name} for p in sorted((d / "logs").glob("*.png"))]
+    shots = [{"name": p.name, "error": bool(FAIL_SHOT_RE.search(p.name))} for p in sorted((d / "logs").glob("*.png"))]
+    cur, step_shots, _, _ = log_info(d)
     pos = list(QUEUE._queue).index(rid) + 1 if rid in list(QUEUE._queue) else 0  # type: ignore[attr-defined]
-    return {"run": {k: v for k, v in m.items() if k != "baseline"}, "steps": progress(d, m["status"]),
+    return {"run": {k: v for k, v in m.items() if k != "baseline"}, "steps": progress(step_shots, m["status"]), "current": cur, "bookings": read_bookings(d),
             "log": text, "offset": new_offset, "shots": shots, "files": run_files(d, m), "queue_position": pos}
 
 
@@ -492,6 +551,7 @@ async def put_settings(request: Request):
     s["env"] = {k.strip(): (old["env"].get(k, "") if v == MASK else str(v))
                 for k, v in new.get("env", {}).items() if k.strip() and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k.strip())}
     s["headless"] = bool(new.get("headless", True))
+    s["dry_run"] = bool(new.get("dry_run", False))
     s["timeout_min"] = max(1, int(new.get("timeout_min", 60)))
     s["alert_on"] = new.get("alert_on", "problems") if new.get("alert_on") in ("problems", "always", "never") else "problems"
     s["slack_webhook"] = old["slack_webhook"] if new.get("slack_webhook") == MASK else new.get("slack_webhook", "").strip()

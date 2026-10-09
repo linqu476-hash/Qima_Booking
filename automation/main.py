@@ -5,7 +5,7 @@ Flow: Login -> Book now -> Product inspection -> General information
 
 Run:  python main.py
 """
-import os, re, sys, time, logging
+import os, re, sys, time, logging, json
 from datetime import datetime, date, time as dtime
 from pathlib import Path
 from openpyxl import load_workbook
@@ -162,6 +162,22 @@ def save_status(row: int, status: str, message: str = ""):
         log.warning("Cannot write status for row %d: %s", row, e)
 
 
+def save_links(page, ref):
+    """Remember the QIMA page reached, so the dashboard can show an Open link."""
+    try:
+        urls = []
+        for u in [page.url] + [f.url for f in page.frames]:
+            if u and u.startswith("http") and u not in urls:
+                urls.append(u)
+        p = BASE / "logs" / "result_links.json"
+        data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+        data.append({"ref": str(ref), "title": page.title(), "urls": urls})
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        log.info("LINK booking %s -> %s", ref, urls)
+    except Exception as e:
+        log.warning("could not save link: %s", e)
+
+
 def prepare_job(job):
     """Validate one row, fill cfg used by the steps; return (excel_path, pdfs)."""
     cfg["BOOKING_REF"] = job["ref"]
@@ -173,8 +189,8 @@ def prepare_job(job):
     cfg["SUPPLIER_NAME"] = job["supplier"] or os.getenv("SUPPLIER_NAME", "")
     if not cfg["SUPPLIER_NAME"]:
         raise ValueError("Supplier empty in Excel and SUPPLIER_NAME missing in .env")
-    excel = BASE / (job["excel"] or os.getenv("EXCEL_FILE") or "input/booking.xlsx")
-    pdf_dir = BASE / (job["pdf_dir"] or os.getenv("PO_PDF_DIR") or "input/po_pdf")
+    excel = resolve_input(job["excel"], os.getenv("EXCEL_FILE") or "input/booking.xlsx")
+    pdf_dir = resolve_input(job["pdf_dir"], os.getenv("PO_PDF_DIR") or "input/po_pdf")
     cfg["PO_PDF_DIR"] = str(pdf_dir)
     if not excel.exists():
         raise FileNotFoundError(f"Booking Excel not found: {excel}")
@@ -182,6 +198,16 @@ def prepare_job(job):
     if not pdfs:
         raise FileNotFoundError(f"No PDF in {pdf_dir}")
     return excel, pdfs
+
+
+def resolve_input(raw: str, default: str) -> Path:
+    """Paths typed in the Excel list may use Windows style (backslashes, C:\\...). Find the file on this machine."""
+    raw = (raw or default).replace("\\", "/")
+    p = Path(raw) if Path(raw).is_absolute() else BASE / raw
+    for cand in (p, BASE / "input" / Path(raw).name, BASE / default):
+        if cand.exists():
+            return cand
+    return p
 
 
 def check_env():
@@ -645,11 +671,13 @@ def main():
                     general_information(page, excel)
                     page = product_information(page, pdfs)
                     page = next_to_inspection_details(page)
+                    save_links(page, job["ref"])
                     # ---- step 3 (Inspection Details) / step 4 (Review) can be added here ----
                     if DRY_RUN:
                         save_status(job["row"], "DRYRUN_OK", "Reached Inspection Details (dry run, not submitted)")
                         results.append((job["ref"], "DRYRUN_OK"))
-                        input("DRY_RUN: check the browser, press Enter for the next booking...")
+                        if sys.stdin and sys.stdin.isatty():   # only pause when a person is at the keyboard
+                            input("DRY_RUN: check the browser, press Enter for the next booking...")
                     else:
                         save_status(job["row"], "DONE", "Reached Inspection Details")
                         results.append((job["ref"], "DONE"))

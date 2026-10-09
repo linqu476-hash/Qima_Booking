@@ -193,6 +193,7 @@ async function openRun(id) {
   cur = id; offset = 0; lastSig = {}; location.hash = "run=" + id; loadRuns();
   $("#main").innerHTML = `<div id="head"></div>
     <div class="panel"><h3>Progress</h3><div class="rail" id="rail"></div></div>
+    <div class="panel"><h3>Bookings</h3><div id="bk"></div></div>
     <div class="panel"><h3>Live log</h3><pre id="log"></pre></div>
     <div class="panel"><h3>Screenshots</h3><div class="gal" id="gal"></div></div>
     <div class="panel"><h3>Files</h3><div id="files"></div></div>`;
@@ -203,19 +204,23 @@ async function pollRun() {
   if (id !== cur || !$("#log")) return;
   const r = d.run, log = $("#log"), stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
   offset = d.offset;
-  if (d.log) { log.textContent += d.log; if (stick) log.scrollTop = log.scrollHeight; }
-  else if (!log.textContent && r.status !== "queued") log.textContent = "Waiting for output...";
+  if (d.log) { if (log.dataset.ph) { log.textContent = ""; delete log.dataset.ph; } log.textContent += d.log; if (stick) log.scrollTop = log.scrollHeight; }
+  else if (!log.textContent && r.status !== "queued") { log.textContent = "Waiting for output..."; log.dataset.ph = "1"; }
   const live = r.status === "running" || r.status === "queued";
   const set = (key, html, el) => { const s = JSON.stringify([html, r.status]); if (lastSig[key] !== s) { lastSig[key] = s; $(el).innerHTML = html; } };
   set("head", `<div class="row" style="justify-content:space-between"><div><h2>Run ${esc(r.id)}</h2>
     <span class="badge ${r.status}">${LABEL[r.status]}</span>
     <span class="mute"> ${r.status === "queued" ? (d.queue_position ? "Position " + d.queue_position + " in the queue" : "Waiting to start") : "Started " + fmt(r.started) + ", " + dur(r.started, r.finished)}</span>
+    ${d.current ? `<div class="mute">Booking ${d.current.n} of ${d.current.total}, ref ${esc(d.current.ref)}</div>` : ""}
     ${r.note ? `<div style="color:${r.status === "failed" ? "var(--bad)" : "var(--warn)"};margin-top:4px">${esc(r.note)}</div>` : ""}</div>
     <div class="row">${live ? `<button class="danger" id="stopB">Stop run</button>` : `<button class="primary" id="retryB">Retry with same files</button><button id="zipB">Download all</button><button class="danger" id="delB">Delete</button>`}</div></div>`, "#head");
   if ($("#stopB")) $("#stopB").onclick = async () => { await api(`/runs/${id}/stop`, {method: "POST"}); toast("Stopping..."); pollRun(); };
   if ($("#retryB")) $("#retryB").onclick = async () => { const n = await api(`/runs/${id}/retry`, {method: "POST"}); await loadRuns(); openRun(n.id); };
   if ($("#zipB")) $("#zipB").onclick = () => location.href = `/api/runs/${id}/zip`;
   if ($("#delB")) $("#delB").onclick = async () => { if (confirm("Delete this run and its files?")) { await api(`/runs/${id}`, {method: "DELETE"}); await loadRuns(); newRunView(); } };
+  const bc = {DONE: "done", FAILED: "failed", DRYRUN_OK: "running"};
+  set("bk", d.bookings.length ? `<table>${d.bookings.map(b => `<tr><td>${esc(b.ref)}</td><td>${esc(b.supplier)}</td><td><span class="badge ${bc[b.status] || ""}">${esc(b.status || "Pending")}</span></td><td class="mute">${esc(b.message)}</td></tr>`).join("")}</table>`
+    : `<p class="mute">Rows from booking_list.xlsx appear here with the status the script writes back.</p>`, "#bk");
   set("rail", d.steps.map(s => `<div class="st ${s.state}">${esc(s.label)}</div>`).join(""), "#rail");
   set("gal", d.shots.length ? d.shots.map(s => {
       const m = s.name.match(/^(\d\d)(\d\d)(\d\d)_(.+)\.png$/), cap = m ? `${m[1]}:${m[2]}:${m[3]} ${m[4].replace(/_/g, " ")}` : s.name;
@@ -236,12 +241,13 @@ $("#setBtn").onclick = async () => {
   const kv = (k, v) => `<div class="kv"><input type="text" class="k" value="${esc(k)}" placeholder="NAME"><input type="${/pass|pwd|secret|token|key/i.test(k) ? "password" : "text"}" class="v" value="${esc(v)}" placeholder="value"><button type="button" onclick="this.parentNode.remove()">Remove</button></div>`;
   $("#main").innerHTML = `<h2>Settings</h2><p class="mute">Saved on the server only. Secrets are never sent back to the browser.</p>
   <div class="panel"><h3>Portal credentials and variables</h3>
-    <p class="mute" style="margin-top:0">These become the script's .env file for every run. Copy the names from your .env.example (for example the portal username and password).</p>
-    <div id="kvs">${Object.entries(s.env).map(([k, v]) => kv(k, v)).join("")}</div>
+    <p class="mute" style="margin-top:0">These become the script's .env file for every run. Required: QIMA_USER and QIMA_PASS. Optional: SUPPLIER_NAME, START_TIME and anything else main.py reads.</p>
+    <div id="kvs">${(Object.keys(s.env).length ? Object.entries(s.env) : [["QIMA_USER", ""], ["QIMA_PASS", ""]]).map(([k, v]) => kv(k, v)).join("")}</div>
     <button type="button" id="addKv">Add variable</button></div>
   <div class="panel"><h3>Run options</h3><div class="grid2">
     <label class="f"><span>Stop a run automatically after (minutes)</span><input type="number" id="timeout" min="1" value="${s.timeout_min}"></label>
-    <label class="f"><span>Browser mode hint (sets HEADLESS)</span><select id="headless"><option value="true" ${s.headless ? "selected" : ""}>Headless</option><option value="false" ${s.headless ? "" : "selected"}>Visible (virtual display)</option></select></label></div></div>
+    <label class="f"><span>Browser mode hint (sets HEADLESS)</span><select id="headless"><option value="true" ${s.headless ? "selected" : ""}>Headless</option><option value="false" ${s.headless ? "" : "selected"}>Visible (virtual display)</option></select></label>
+    <label class="f"><span>Dry run (DRY_RUN)</span><select id="dry"><option value="false" ${s.dry_run ? "" : "selected"}>Off: rows are marked DONE</option><option value="true" ${s.dry_run ? "selected" : ""}>On: rows are marked DRYRUN_OK</option></select></label></div></div>
   <div class="panel"><h3>Alerts</h3>
     <label class="f"><span>Send alerts</span><select id="alertOn"><option value="problems">When a run fails or has error screenshots</option><option value="always">After every run</option><option value="never">Never</option></select></label>
     <label class="f"><span>Slack incoming webhook URL</span><input type="password" id="slack" value="${esc(s.slack_webhook)}" autocomplete="off"></label>
@@ -259,7 +265,7 @@ $("#setBtn").onclick = async () => {
   $("#addKv").onclick = () => $("#kvs").insertAdjacentHTML("beforeend", kv("", ""));
   const collect = () => ({
     env: Object.fromEntries([...document.querySelectorAll("#kvs .kv")].map(r => [r.querySelector(".k").value, r.querySelector(".v").value])),
-    timeout_min: +$("#timeout").value, headless: $("#headless").value === "true", alert_on: $("#alertOn").value, slack_webhook: $("#slack").value,
+    timeout_min: +$("#timeout").value, headless: $("#headless").value === "true", dry_run: $("#dry").value === "true", alert_on: $("#alertOn").value, slack_webhook: $("#slack").value,
     email: {enabled: $("#mailOn").checked, host: $("#mHost").value, port: +$("#mPort").value, user: $("#mUser").value, password: $("#mPass").value, from: $("#mFrom").value, to: $("#mTo").value},
     schedule: {enabled: $("#schOn").checked, time: $("#schTime").value, days: [...document.querySelectorAll(".day:checked")].map(c => +c.value)}});
   $("#saveSet").onclick = async () => { try { await jput("/settings", collect()); toast("Settings saved"); $("#setBtn").click(); } catch (e) { toast(e.message); } };
